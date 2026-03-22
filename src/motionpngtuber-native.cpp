@@ -8,6 +8,10 @@
 #include "mpt-text.h"
 #include "mpt-video-backend.h"
 
+#ifndef MPT_FALLBACK_OBS
+#include <util/platform.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
