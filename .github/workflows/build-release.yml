@@ -731,7 +731,8 @@ jobs:
           "$PYTHON_BIN" ./ci/configure-obs-websocket.py \
             --config-root "$OBS_CONFIG_ROOT" \
             --port "$OBS_WEBSOCKET_PORT" \
-            --set-macos-permissions-dialog-shown
+            --set-macos-permissions-dialog-shown \
+            --mark-first-run-complete
 
           start_obs
           "$PYTHON_BIN" ./ci/obs-websocket-smoke.py \

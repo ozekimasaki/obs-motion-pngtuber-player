@@ -83,12 +83,34 @@ def update_legacy_global_config(
     return global_config_path
 
 
+def update_user_config(config_root: Path, *, mark_first_run_complete: bool = False) -> Path | None:
+    user_config_path = config_root / "user.ini"
+    if not mark_first_run_complete:
+        return user_config_path if user_config_path.exists() else None
+
+    parser = create_ini_parser()
+
+    if user_config_path.exists():
+        parser.read(user_config_path, encoding="utf-8")
+
+    if not parser.has_section("General"):
+        parser.add_section("General")
+    parser.set("General", "FirstRun", "true")
+
+    user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    with user_config_path.open("w", encoding="utf-8", newline="\n") as handle:
+        parser.write(handle, space_around_delimiters=False)
+
+    return user_config_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Configure the OBS websocket server for smoke tests.")
     parser.add_argument("--config-root", required=True, help="OBS config root (for example obs-studio).")
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--password", default="unused")
     parser.add_argument("--set-macos-permissions-dialog-shown", action="store_true")
+    parser.add_argument("--mark-first-run-complete", action="store_true")
     args = parser.parse_args()
 
     config_root = Path(args.config_root)
@@ -113,11 +135,16 @@ def main() -> int:
         args.password,
         mark_macos_permissions_dialog_shown=args.set_macos_permissions_dialog_shown,
     )
+    user_config_path = update_user_config(
+        config_root,
+        mark_first_run_complete=args.mark_first_run_complete,
+    )
     print(
         json.dumps(
             {
                 "config_path": str(config_path),
                 "global_config_path": str(global_config_path),
+                "user_config_path": str(user_config_path) if user_config_path else None,
                 "server_port": args.port,
             },
             indent=2,

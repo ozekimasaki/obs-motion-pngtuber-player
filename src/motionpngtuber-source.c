@@ -403,9 +403,17 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	const char *track_calibrated_file = NULL;
 	const char *audio_device_identity = NULL;
 	const char *valid_policy = NULL;
+	char *saved_loop_video = NULL;
+	char *saved_mouth_dir = NULL;
+	char *saved_track_file = NULL;
+	char *saved_track_calibrated_file = NULL;
+	char *saved_audio_device_identity = NULL;
+	char *saved_valid_policy = NULL;
 	long long render_fps = 0;
 	long long normalized_render_fps = 30;
+	long long saved_render_fps = 30;
 	long long audio_device_index = -1;
+	long long saved_audio_device_index = -1;
 	bool requires_runtime_rebuild = false;
 
 	if (should_auto_fill_related_paths(settings))
@@ -417,6 +425,8 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	track_calibrated_file = obs_data_get_string(settings, PROP_TRACK_CALIBRATED_FILE);
 	audio_device_identity = obs_data_get_string(settings, PROP_AUDIO_DEVICE_IDENTITY);
 	valid_policy = obs_data_get_string(settings, PROP_VALID_POLICY);
+	if (!has_text(valid_policy))
+		valid_policy = "hold";
 	render_fps = obs_data_get_int(settings, PROP_RENDER_FPS);
 	if (render_fps > 0)
 		normalized_render_fps = render_fps;
@@ -442,9 +452,33 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	context->render_fps = normalized_render_fps;
 	context->audio_device_index = audio_device_index;
 	apply_runtime_defaults(context);
+	saved_loop_video = bstrdup(context->loop_video ? context->loop_video : "");
+	saved_mouth_dir = bstrdup(context->mouth_dir ? context->mouth_dir : "");
+	saved_track_file = bstrdup(context->track_file ? context->track_file : "");
+	saved_track_calibrated_file = bstrdup(context->track_calibrated_file ? context->track_calibrated_file : "");
+	saved_audio_device_identity = bstrdup(context->audio_device_identity_json ? context->audio_device_identity_json : "");
+	saved_valid_policy = bstrdup((context->valid_policy && *context->valid_policy) ? context->valid_policy : "hold");
+	saved_render_fps = context->render_fps > 0 ? context->render_fps : 30;
+	saved_audio_device_index = context->audio_device_index;
 	if (requires_runtime_rebuild)
 		context->runtime_dirty = true;
 	pthread_mutex_unlock(&context->mutex);
+
+	obs_data_set_string(settings, PROP_LOOP_VIDEO, saved_loop_video);
+	obs_data_set_string(settings, PROP_MOUTH_DIR, saved_mouth_dir);
+	obs_data_set_string(settings, PROP_TRACK_FILE, saved_track_file);
+	obs_data_set_string(settings, PROP_TRACK_CALIBRATED_FILE, saved_track_calibrated_file);
+	obs_data_set_int(settings, PROP_RENDER_FPS, saved_render_fps);
+	obs_data_set_int(settings, PROP_AUDIO_DEVICE_INDEX, saved_audio_device_index);
+	obs_data_set_string(settings, PROP_AUDIO_DEVICE_IDENTITY, saved_audio_device_identity);
+	obs_data_set_string(settings, PROP_VALID_POLICY, saved_valid_policy);
+
+	bfree(saved_loop_video);
+	bfree(saved_mouth_dir);
+	bfree(saved_track_file);
+	bfree(saved_track_calibrated_file);
+	bfree(saved_audio_device_identity);
+	bfree(saved_valid_policy);
 }
 
 static void motionpngtuber_save(void *data, obs_data_t *settings)
