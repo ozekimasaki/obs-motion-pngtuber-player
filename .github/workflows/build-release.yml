@@ -448,13 +448,14 @@ jobs:
               cat "$OPENBOX_LOG" >&2 || true
               return 1
             fi
+            printf '\n=== start_obs %s ===\n' "$(date -Iseconds)" >>"$OBS_STDOUT_LOG"
             HOME="$SMOKE_HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" "${{ steps.obs_layout.outputs.obs_executable }}" \
               --disable-shutdown-check \
               --disable-missing-files-check \
               --multi \
               --websocket_port "${OBS_WEBSOCKET_PORT}" \
               --websocket_ipv4_only \
-              --websocket_debug >"$OBS_STDOUT_LOG" 2>&1 &
+              --websocket_debug >>"$OBS_STDOUT_LOG" 2>&1 &
             local obs_pid=$!
             echo "$obs_pid" > "$OBS_PID_FILE"
             sleep 20
@@ -465,6 +466,11 @@ jobs:
             while read -r window_id; do
               if [[ -n "$window_id" ]]; then
                 xdotool windowactivate --sync "$window_id" 2>/dev/null || true
+                xdotool key --window "$window_id" --clearmodifiers ctrl+q 2>/dev/null || true
+                sleep 1
+                if kill -0 "$obs_pid" 2>/dev/null; then
+                  xdotool key --window "$window_id" alt+F4 2>/dev/null || true
+                fi
                 xdotool windowclose "$window_id" 2>/dev/null || true
               fi
             done < <(xdotool search --onlyvisible --pid "$obs_pid" 2>/dev/null || true)
@@ -524,6 +530,9 @@ jobs:
             --asset-dir "$RUNNER_TEMP/mpt-smoke-assets" \
             --artifacts-dir "$OBS_RESULTS"
           stop_obs
+          if [[ -d "$OBS_CONFIG_ROOT/basic" ]]; then
+            grep -R '"render_fps"' "$OBS_CONFIG_ROOT/basic" || true
+          fi
 
           start_obs
           "$PYTHON_BIN" ./ci/obs-websocket-smoke.py \
@@ -625,16 +634,46 @@ jobs:
           : >"$OBS_TEST_CONFIG_MARKER"
 
           start_obs() {
-            "${{ steps.obs_layout.outputs.obs_executable }}" \
+            local before_pids
+            local after_pids
+            local obs_pid=""
+
+            rm -f "$OBS_PID_FILE"
+            before_pids="$(mktemp)"
+            after_pids="$(mktemp)"
+            pgrep -x OBS | sort -u >"$before_pids" || true
+            open -na /Applications/OBS.app --args \
               --disable-shutdown-check \
               --disable-missing-files-check \
               --multi \
               --websocket_port "${OBS_WEBSOCKET_PORT}" \
               --websocket_ipv4_only \
-              --websocket_debug >"$OBS_STDOUT_LOG" 2>&1 &
-            local obs_pid=$!
-            echo "$obs_pid" > "$OBS_PID_FILE"
-            sleep 20
+              --websocket_debug >/dev/null 2>&1
+
+            for _ in $(seq 1 60); do
+              pgrep -x OBS | sort -u >"$after_pids" || true
+              obs_pid="$(comm -13 "$before_pids" "$after_pids" | tail -n 1)"
+              if [[ -z "$obs_pid" ]]; then
+                obs_pid="$(tail -n 1 "$after_pids" || true)"
+              fi
+              if [[ -n "$obs_pid" ]] && kill -0 "$obs_pid" 2>/dev/null && \
+                lsof -nP -a -p "$obs_pid" -iTCP:"${OBS_WEBSOCKET_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
+                echo "$obs_pid" > "$OBS_PID_FILE"
+                rm -f "$before_pids" "$after_pids"
+                sleep 5
+                return 0
+              fi
+              sleep 1
+            done
+
+            echo "Timed out waiting for OBS websocket on port ${OBS_WEBSOCKET_PORT}" >&2
+            pgrep -x OBS || true
+            lsof -nP -iTCP:"${OBS_WEBSOCKET_PORT}" || true
+            if ls -1t "$OBS_CONFIG_ROOT/logs"/*.txt >/dev/null 2>&1; then
+              tail -n 200 "$(ls -1t "$OBS_CONFIG_ROOT/logs"/*.txt | head -n 1)" || true
+            fi
+            rm -f "$before_pids" "$after_pids"
+            return 1
           }
 
           request_quit_obs() {
