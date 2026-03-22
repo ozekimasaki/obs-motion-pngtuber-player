@@ -11,6 +11,7 @@ This directory is intended to be managed as a **separate Git repository** from t
 - Native OBS input source plugin on Windows
 - In-process native MotionPNGTuber playback runtime on Windows
 - Per-source audio input device selection
+- OBS audio-source follow mode enabled by default for tighter lip-sync, with direct-input fallback when no suitable OBS source is available
 - Auto-fill of sibling mouth/track assets when the loop video is selected
 - Output as a normal OBS video source so standard OBS filters can be applied
 

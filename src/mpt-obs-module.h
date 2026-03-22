@@ -19,6 +19,8 @@
 #define LIBOBS_API_VER MAKE_SEMANTIC_VERSION(LIBOBS_API_MAJOR_VER, LIBOBS_API_MINOR_VER, LIBOBS_API_PATCH_VER)
 
 #define MAX_AV_PLANES 8
+#define MAX_AUDIO_MIXES 6
+#define MAX_AUDIO_CHANNELS 8
 
 enum {
 	LOG_ERROR = 100,
@@ -45,6 +47,9 @@ struct obs_mouse_event;
 struct obs_key_event;
 struct obs_source_audio_mix;
 struct audio_output_data;
+struct audio_output_info;
+struct audio_data;
+struct audio_output;
 
 typedef struct obs_source obs_source_t;
 typedef struct obs_module obs_module_t;
@@ -55,6 +60,7 @@ typedef struct obs_property obs_property_t;
 typedef struct text_lookup lookup_t;
 typedef struct gs_effect gs_effect_t;
 typedef struct obs_missing_files obs_missing_files_t;
+typedef struct audio_output audio_t;
 
 enum gs_color_space {
 	GS_CS_UNKNOWN = 0,
@@ -89,6 +95,29 @@ enum video_format {
 	VIDEO_FORMAT_R10L,
 };
 
+enum audio_format {
+	AUDIO_FORMAT_UNKNOWN,
+	AUDIO_FORMAT_U8BIT,
+	AUDIO_FORMAT_16BIT,
+	AUDIO_FORMAT_32BIT,
+	AUDIO_FORMAT_FLOAT,
+	AUDIO_FORMAT_U8BIT_PLANAR,
+	AUDIO_FORMAT_16BIT_PLANAR,
+	AUDIO_FORMAT_32BIT_PLANAR,
+	AUDIO_FORMAT_FLOAT_PLANAR,
+};
+
+enum speaker_layout {
+	SPEAKERS_UNKNOWN,
+	SPEAKERS_MONO,
+	SPEAKERS_STEREO,
+	SPEAKERS_2POINT1,
+	SPEAKERS_4POINT0,
+	SPEAKERS_4POINT1,
+	SPEAKERS_5POINT1,
+	SPEAKERS_7POINT1 = 8,
+};
+
 struct obs_source_frame {
 	uint8_t *data[MAX_AV_PLANES];
 	uint32_t linesize[MAX_AV_PLANES];
@@ -106,6 +135,28 @@ struct obs_source_frame {
 	uint8_t trc;
 	volatile long refs;
 	bool prev_frame;
+};
+
+struct audio_data {
+	uint8_t *data[MAX_AV_PLANES];
+	uint32_t frames;
+	uint64_t timestamp;
+};
+
+struct audio_output_data {
+	float *data[MAX_AUDIO_CHANNELS];
+};
+
+typedef bool (*audio_input_callback_t)(void *param, uint64_t start_ts, uint64_t end_ts, uint64_t *new_ts,
+				       uint32_t active_mixers, struct audio_output_data *mixes);
+
+struct audio_output_info {
+	const char *name;
+	uint32_t samples_per_sec;
+	enum audio_format format;
+	enum speaker_layout speakers;
+	audio_input_callback_t input_callback;
+	void *input_param;
 };
 
 enum obs_source_type {
@@ -165,6 +216,88 @@ enum obs_media_state {
 #define OBS_SOURCE_REQUIRES_CANVAS (1 << 17)
 
 typedef void (*obs_source_enum_proc_t)(obs_source_t *parent, obs_source_t *child, void *param);
+typedef void (*obs_source_audio_capture_t)(void *param, obs_source_t *source, const struct audio_data *audio_data,
+					   bool muted);
+
+static inline uint32_t get_audio_channels(enum speaker_layout speakers)
+{
+	switch (speakers) {
+	case SPEAKERS_MONO:
+		return 1;
+	case SPEAKERS_STEREO:
+		return 2;
+	case SPEAKERS_2POINT1:
+		return 3;
+	case SPEAKERS_4POINT0:
+		return 4;
+	case SPEAKERS_4POINT1:
+		return 5;
+	case SPEAKERS_5POINT1:
+		return 6;
+	case SPEAKERS_7POINT1:
+		return 8;
+	case SPEAKERS_UNKNOWN:
+		return 0;
+	}
+
+	return 0;
+}
+
+static inline size_t get_audio_bytes_per_channel(enum audio_format format)
+{
+	switch (format) {
+	case AUDIO_FORMAT_U8BIT:
+	case AUDIO_FORMAT_U8BIT_PLANAR:
+		return 1;
+
+	case AUDIO_FORMAT_16BIT:
+	case AUDIO_FORMAT_16BIT_PLANAR:
+		return 2;
+
+	case AUDIO_FORMAT_FLOAT:
+	case AUDIO_FORMAT_FLOAT_PLANAR:
+	case AUDIO_FORMAT_32BIT:
+	case AUDIO_FORMAT_32BIT_PLANAR:
+		return 4;
+
+	case AUDIO_FORMAT_UNKNOWN:
+		return 0;
+	}
+
+	return 0;
+}
+
+static inline bool is_audio_planar(enum audio_format format)
+{
+	switch (format) {
+	case AUDIO_FORMAT_U8BIT:
+	case AUDIO_FORMAT_16BIT:
+	case AUDIO_FORMAT_32BIT:
+	case AUDIO_FORMAT_FLOAT:
+		return false;
+
+	case AUDIO_FORMAT_U8BIT_PLANAR:
+	case AUDIO_FORMAT_16BIT_PLANAR:
+	case AUDIO_FORMAT_32BIT_PLANAR:
+	case AUDIO_FORMAT_FLOAT_PLANAR:
+		return true;
+
+	case AUDIO_FORMAT_UNKNOWN:
+		return false;
+	}
+
+	return false;
+}
+
+static inline size_t get_audio_planes(enum audio_format format, enum speaker_layout speakers)
+{
+	return is_audio_planar(format) ? get_audio_channels(speakers) : 1;
+}
+
+static inline uint64_t audio_frames_to_ns(size_t sample_rate, uint64_t frames)
+{
+	return sample_rate > 0 ? (frames * 1000000000ULL) / (uint64_t)sample_rate : 0ULL;
+}
 
 struct obs_source_info {
 	const char *id;
@@ -258,7 +391,18 @@ enum obs_text_type {
 typedef bool (*obs_property_modified_t)(obs_properties_t *props, obs_property_t *property, obs_data_t *settings);
 
 EXPORT void obs_register_source_s(const struct obs_source_info *info, size_t size);
+EXPORT audio_t *obs_get_audio(void);
+EXPORT const struct audio_output_info *audio_output_get_info(const audio_t *audio);
+EXPORT void obs_enum_sources(bool (*enum_proc)(void *, obs_source_t *), void *param);
+EXPORT obs_source_t *obs_get_source_by_uuid(const char *uuid);
+EXPORT void obs_source_release(obs_source_t *source);
 EXPORT const char *obs_source_get_name(const obs_source_t *source);
+EXPORT const char *obs_source_get_uuid(const obs_source_t *source);
+EXPORT uint32_t obs_source_get_output_flags(const obs_source_t *source);
+EXPORT void obs_source_add_audio_capture_callback(obs_source_t *source, obs_source_audio_capture_t callback,
+						  void *param);
+EXPORT void obs_source_remove_audio_capture_callback(obs_source_t *source, obs_source_audio_capture_t callback,
+						     void *param);
 EXPORT void obs_source_output_video(obs_source_t *source, const struct obs_source_frame *frame);
 
 EXPORT obs_data_t *obs_data_create(void);

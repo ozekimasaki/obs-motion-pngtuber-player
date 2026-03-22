@@ -10,6 +10,7 @@
 
 - Windows 上の OBS 通常ソースとして MotionPNGTuber を再生
 - ソースごとに口パク用の音声入力デバイスを選択
+- 既定で OBS 音声ソースを優先して追従し、見つからない場合は直接入力へフォールバックする厳密同期モード
 - `loop_video` を選ぶと、周辺の `mouth` / `mouth_track.*` / `mouth_track_calibrated.*` を自動補完
 - OBS 標準フィルターをそのまま適用
 - Python なしの in-process native runtime で再生

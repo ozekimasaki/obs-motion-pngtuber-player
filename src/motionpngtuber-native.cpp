@@ -7,6 +7,7 @@
 #include "mpt-image-backend.h"
 #include "mpt-text.h"
 #include "mpt-video-backend.h"
+#include "plugin-support.h"
 
 #ifndef MPT_FALLBACK_OBS
 #include <util/platform.h>
@@ -20,10 +21,12 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <sstream>
 #include <string>
@@ -56,6 +59,16 @@ struct QuadFrame {
 	bool valid = false;
 	bool warp_ready = false;
 };
+
+struct AudioAnalysisWindow {
+	uint64_t start_timestamp_ns = 0;
+	uint64_t end_timestamp_ns = 0;
+	float rms = 0.0f;
+	float zcr = 0.0f;
+};
+
+constexpr const char *kAutoObsAudioSourceSelection = "__auto__";
+constexpr const char *kDirectInputAudioSourceSelection = "__direct__";
 
 #ifdef _WIN32
 static std::wstring utf8_to_wide(const char *text)
@@ -800,6 +813,104 @@ static bool load_track_frames_from_json(const std::string &path, uint32_t output
 	return true;
 }
 
+static double read_audio_sample_normalized(const uint8_t *data, enum audio_format format)
+{
+	if (!data)
+		return 0.0;
+
+	switch (format) {
+	case AUDIO_FORMAT_U8BIT:
+	case AUDIO_FORMAT_U8BIT_PLANAR:
+		return ((double)data[0] - 128.0) / 128.0;
+
+	case AUDIO_FORMAT_16BIT:
+	case AUDIO_FORMAT_16BIT_PLANAR:
+		return (double)(*reinterpret_cast<const int16_t *>(data)) / 32768.0;
+
+	case AUDIO_FORMAT_32BIT:
+	case AUDIO_FORMAT_32BIT_PLANAR:
+		return (double)(*reinterpret_cast<const int32_t *>(data)) / 2147483648.0;
+
+	case AUDIO_FORMAT_FLOAT:
+	case AUDIO_FORMAT_FLOAT_PLANAR:
+		return (double)(*reinterpret_cast<const float *>(data));
+
+	case AUDIO_FORMAT_UNKNOWN:
+		return 0.0;
+	}
+
+	return 0.0;
+}
+
+static bool compute_audio_metrics_from_obs_audio(const struct audio_data *audio, enum audio_format format,
+						 enum speaker_layout speakers, float &out_rms, float &out_zcr)
+{
+	out_rms = 0.0f;
+	out_zcr = 0.0f;
+	if (!audio || audio->frames == 0)
+		return false;
+
+	const uint32_t channels = get_audio_channels(speakers);
+	const size_t bytes_per_channel = get_audio_bytes_per_channel(format);
+	if (channels == 0 || bytes_per_channel == 0)
+		return false;
+
+	double sum_sq = 0.0;
+	size_t zero_crossings = 0;
+	double prev = 0.0;
+	bool have_prev = false;
+	size_t frame_count = 0;
+	const bool planar = is_audio_planar(format);
+
+	if (planar) {
+		const size_t planes = std::min<size_t>(channels, get_audio_planes(format, speakers));
+		for (uint32_t frame = 0; frame < audio->frames; ++frame) {
+			double mono = 0.0;
+			size_t used_channels = 0;
+			for (size_t plane = 0; plane < planes; ++plane) {
+				if (!audio->data[plane])
+					continue;
+				mono += read_audio_sample_normalized(audio->data[plane] + ((size_t)frame * bytes_per_channel), format);
+				++used_channels;
+			}
+			if (used_channels == 0)
+				continue;
+			mono /= (double)used_channels;
+			sum_sq += mono * mono;
+			if (have_prev && ((prev < 0.0 && mono >= 0.0) || (prev >= 0.0 && mono < 0.0)))
+				++zero_crossings;
+			prev = mono;
+			have_prev = true;
+			++frame_count;
+		}
+	} else {
+		const uint8_t *interleaved = audio->data[0];
+		if (!interleaved)
+			return false;
+		for (uint32_t frame = 0; frame < audio->frames; ++frame) {
+			double mono = 0.0;
+			for (uint32_t channel = 0; channel < channels; ++channel) {
+				const size_t offset = (((size_t)frame * channels) + (size_t)channel) * bytes_per_channel;
+				mono += read_audio_sample_normalized(interleaved + offset, format);
+			}
+			mono /= (double)channels;
+			sum_sq += mono * mono;
+			if (have_prev && ((prev < 0.0 && mono >= 0.0) || (prev >= 0.0 && mono < 0.0)))
+				++zero_crossings;
+			prev = mono;
+			have_prev = true;
+			++frame_count;
+		}
+	}
+
+	if (frame_count == 0)
+		return false;
+
+	out_rms = (float)sqrt(sum_sq / (double)frame_count);
+	out_zcr = frame_count > 1 ? (float)zero_crossings / (float)(frame_count - 1) : 0.0f;
+	return true;
+}
+
 class NativeRuntime {
 public:
 	explicit NativeRuntime(const struct mpt_native_runtime_config *config)
@@ -810,6 +921,7 @@ public:
 		  mouth_dir_path_(config && config->mouth_dir ? config->mouth_dir : ""),
 		  track_file_path_(config && config->track_file ? config->track_file : ""),
 		  track_calibrated_path_(config && config->track_calibrated_file ? config->track_calibrated_file : ""),
+		  obs_audio_source_uuid_(config && config->audio_sync_source_uuid ? config->audio_sync_source_uuid : ""),
 		  audio_identity_json_(config && config->audio_device_identity_json ? config->audio_device_identity_json : "")
 	{
 		if (render_fps_ <= 0)
@@ -864,18 +976,17 @@ public:
 		if (!read_next_video_frame(output_, video_timestamp_ns))
 			return false;
 
-		update_mouth_state();
+		uint64_t frame_interval_ns = 1000000000ULL / (uint64_t)std::max(render_fps_, 1);
+		uint64_t output_timestamp_ns =
+			next_output_timestamp_ns_ == 0 ? os_gettime_ns() : (next_output_timestamp_ns_ + frame_interval_ns);
+		update_mouth_state(output_timestamp_ns);
 		const ImageBGRA &sprite = current_sprite();
 		const QuadFrame *quad = current_track_frame();
 		if (!sprite.empty() && quad)
 			warp_and_blend(output_, sprite, *quad);
 
 		++frame_index_;
-		uint64_t frame_interval_ns = 1000000000ULL / (uint64_t)std::max(render_fps_, 1);
-		if (next_output_timestamp_ns_ == 0)
-			next_output_timestamp_ns_ = os_gettime_ns();
-		else
-			next_output_timestamp_ns_ += frame_interval_ns;
+		next_output_timestamp_ns_ = output_timestamp_ns;
 		*out_bgra = output_.pixels.data();
 		*out_size = output_.pixels.size();
 		*out_width = output_.width;
@@ -1040,8 +1151,150 @@ private:
 		return mpt_video_backend_read_next_frame(video_backend_, image, timestamp_ns);
 	}
 
+	bool initialize_obs_audio_format()
+	{
+		audio_t *obs_audio = obs_get_audio();
+		const struct audio_output_info *info = obs_audio ? audio_output_get_info(obs_audio) : nullptr;
+		if (!info || info->samples_per_sec == 0)
+			return false;
+		if (get_audio_channels(info->speakers) == 0 || get_audio_bytes_per_channel(info->format) == 0)
+			return false;
+
+		obs_audio_sample_rate_ = info->samples_per_sec;
+		obs_audio_format_ = info->format;
+		obs_audio_speakers_ = info->speakers;
+		return true;
+	}
+
+	void clear_audio_analysis_windows()
+	{
+		std::lock_guard<std::mutex> lock(audio_windows_mutex_);
+		audio_windows_.clear();
+	}
+
+	void queue_audio_analysis_window(uint64_t start_timestamp_ns, uint64_t end_timestamp_ns, float rms, float zcr)
+	{
+		latest_rms_.store(rms);
+		latest_zcr_.store(zcr);
+		if (end_timestamp_ns <= start_timestamp_ns)
+			return;
+
+		std::lock_guard<std::mutex> lock(audio_windows_mutex_);
+		if (!audio_windows_.empty() && start_timestamp_ns < audio_windows_.back().start_timestamp_ns)
+			audio_windows_.clear();
+
+		audio_windows_.push_back({start_timestamp_ns, end_timestamp_ns, rms, zcr});
+		uint64_t keep_after_ns = end_timestamp_ns > 3000000000ULL ? end_timestamp_ns - 3000000000ULL : 0ULL;
+		while (!audio_windows_.empty() && audio_windows_.front().end_timestamp_ns < keep_after_ns)
+			audio_windows_.pop_front();
+		while (audio_windows_.size() > 256)
+			audio_windows_.pop_front();
+	}
+
+	bool find_audio_metrics_for_timestamp(uint64_t timestamp_ns, float &out_rms, float &out_zcr)
+	{
+		std::lock_guard<std::mutex> lock(audio_windows_mutex_);
+		if (audio_windows_.empty())
+			return false;
+
+		while (audio_windows_.size() > 1 && audio_windows_[1].end_timestamp_ns <= timestamp_ns)
+			audio_windows_.pop_front();
+
+		const AudioAnalysisWindow *selected = nullptr;
+		for (const auto &window : audio_windows_) {
+			if (window.start_timestamp_ns <= timestamp_ns && timestamp_ns < window.end_timestamp_ns) {
+				selected = &window;
+				break;
+			}
+			if (window.end_timestamp_ns <= timestamp_ns)
+				selected = &window;
+			else
+				break;
+		}
+		if (!selected)
+			return false;
+		if (timestamp_ns > selected->end_timestamp_ns + 250000000ULL)
+			return false;
+
+		out_rms = selected->rms;
+		out_zcr = selected->zcr;
+		return true;
+	}
+
+	bool obs_audio_follow_requested() const
+	{
+		return !obs_audio_source_uuid_.empty();
+	}
+
+	bool try_attach_obs_audio_source(bool log_if_missing)
+	{
+		if (!obs_audio_follow_requested())
+			return false;
+		if (obs_audio_source_)
+			return true;
+
+		uint64_t now_ns = os_gettime_ns();
+		if (now_ns < next_obs_audio_attach_attempt_ns_)
+			return false;
+		next_obs_audio_attach_attempt_ns_ = now_ns + 1000000000ULL;
+
+		if (!initialize_obs_audio_format()) {
+			if (!obs_audio_attach_warning_logged_ || log_if_missing) {
+				obs_log(LOG_WARNING, "failed to initialize OBS audio format for MotionPngTuberPlayer lip sync follow mode");
+				obs_audio_attach_warning_logged_ = true;
+			}
+			return false;
+		}
+
+		obs_source_t *source = obs_get_source_by_uuid(obs_audio_source_uuid_.c_str());
+		if (!source) {
+			if (!obs_audio_attach_warning_logged_ || log_if_missing) {
+				obs_log(LOG_WARNING, "OBS audio source for MotionPngTuberPlayer lip sync was not found: %s",
+					obs_audio_source_uuid_.c_str());
+				obs_audio_attach_warning_logged_ = true;
+			}
+			return false;
+		}
+		if ((obs_source_get_output_flags(source) & OBS_SOURCE_AUDIO) == 0) {
+			const char *name = obs_source_get_name(source);
+			obs_log(LOG_WARNING, "OBS source '%s' does not output audio and cannot drive MotionPngTuberPlayer lip sync",
+				name && *name ? name : obs_audio_source_uuid_.c_str());
+			obs_source_release(source);
+			obs_audio_attach_warning_logged_ = true;
+			return false;
+		}
+
+		obs_source_add_audio_capture_callback(source, &NativeRuntime::obs_audio_capture_callback, this);
+		obs_audio_source_ = source;
+		obs_audio_attach_warning_logged_ = false;
+		clear_audio_analysis_windows();
+		latest_rms_.store(0.0f);
+		latest_zcr_.store(0.0f);
+		return true;
+	}
+
+	void handle_obs_source_audio(const struct audio_data *audio, bool muted)
+	{
+		if (!audio || audio->frames == 0 || obs_audio_sample_rate_ == 0) {
+			latest_rms_.store(0.0f);
+			latest_zcr_.store(0.0f);
+			return;
+		}
+
+		float rms = 0.0f;
+		float zcr = 0.0f;
+		if (!muted)
+			compute_audio_metrics_from_obs_audio(audio, obs_audio_format_, obs_audio_speakers_, rms, zcr);
+
+		uint64_t duration_ns = audio_frames_to_ns(obs_audio_sample_rate_, audio->frames);
+		queue_audio_analysis_window(audio->timestamp, audio->timestamp + duration_ns, rms, zcr);
+	}
+
 	void initialize_audio()
 	{
+		if (obs_audio_follow_requested() && try_attach_obs_audio_source(true))
+			return;
+
 #ifdef _WIN32
 		UINT device_index = resolve_audio_device();
 		if (device_index == UINT_MAX)
@@ -1105,21 +1358,39 @@ private:
 
 	void shutdown_audio()
 	{
+		if (obs_audio_source_) {
+			obs_source_remove_audio_capture_callback(obs_audio_source_, &NativeRuntime::obs_audio_capture_callback, this);
+			obs_source_release(obs_audio_source_);
+			obs_audio_source_ = nullptr;
+		}
+		clear_audio_analysis_windows();
+		next_obs_audio_attach_attempt_ns_ = 0;
+
 #ifdef _WIN32
 		HWAVEIN wave_in = wave_in_.exchange(nullptr);
-		if (!wave_in)
-			return;
-		waveInStop(wave_in);
-		waveInReset(wave_in);
-		for (auto &header : audio_headers_) {
-			if (header.dwFlags & WHDR_PREPARED)
-				waveInUnprepareHeader(wave_in, &header, sizeof(WAVEHDR));
+		if (wave_in) {
+			waveInStop(wave_in);
+			waveInReset(wave_in);
+			for (auto &header : audio_headers_) {
+				if (header.dwFlags & WHDR_PREPARED)
+					waveInUnprepareHeader(wave_in, &header, sizeof(WAVEHDR));
+			}
+			waveInClose(wave_in);
 		}
-		waveInClose(wave_in);
 #else
 		mpt_audio_backend_stop_input_capture(audio_capture_);
 		audio_capture_ = nullptr;
 #endif
+	}
+
+	static void obs_audio_capture_callback(void *param, obs_source_t *source, const struct audio_data *audio_data,
+					     bool muted)
+	{
+		UNUSED_PARAMETER(source);
+		auto *runtime = reinterpret_cast<NativeRuntime *>(param);
+		if (!runtime)
+			return;
+		runtime->handle_obs_source_audio(audio_data, muted);
 	}
 
 #ifdef _WIN32
@@ -1208,11 +1479,8 @@ private:
 		latest_zcr_.store(zcr);
 	}
 
-	void update_mouth_state()
+	void apply_mouth_metrics(float rms, float zcr, bool enable_temporal_smoothing)
 	{
-		float rms = latest_rms_.load();
-		float zcr = latest_zcr_.load();
-
 		if (rms < noise_floor_ + 0.0005f)
 			noise_floor_ = noise_floor_ * 0.995f + rms * 0.005f;
 		else
@@ -1223,8 +1491,13 @@ private:
 		float normalized = std::clamp((rms - noise_floor_) / denom, 0.0f, 1.0f);
 		normalized = sqrtf(normalized);
 
-		env_lp_ += 0.35f * (normalized - env_lp_);
-		float env = std::clamp(env_lp_ * 0.75f + normalized * 0.25f, 0.0f, 1.0f);
+		float env = normalized;
+		if (enable_temporal_smoothing) {
+			env_lp_ += 0.35f * (normalized - env_lp_);
+			env = std::clamp(env_lp_ * 0.75f + normalized * 0.25f, 0.0f, 1.0f);
+		} else {
+			env_lp_ = normalized;
+		}
 
 		if (env < 0.08f) {
 			mouth_shape_index_ = 0;
@@ -1240,6 +1513,21 @@ private:
 			mouth_shape_index_ = 4;
 		else
 			mouth_shape_index_ = 2;
+	}
+
+	void update_mouth_state(uint64_t output_timestamp_ns)
+	{
+		if (obs_audio_follow_requested()) {
+			float rms = 0.0f;
+			float zcr = 0.0f;
+			if (try_attach_obs_audio_source(false) && find_audio_metrics_for_timestamp(output_timestamp_ns, rms, zcr))
+				apply_mouth_metrics(rms, zcr, false);
+			else
+				apply_mouth_metrics(latest_rms_.load(), latest_zcr_.load(), true);
+			return;
+		}
+
+		apply_mouth_metrics(latest_rms_.load(), latest_zcr_.load(), true);
 	}
 
 	const ImageBGRA &current_sprite() const
@@ -1281,8 +1569,17 @@ private:
 	std::string mouth_dir_path_;
 	std::string track_file_path_;
 	std::string track_calibrated_path_;
+	std::string obs_audio_source_uuid_;
 	std::string audio_identity_json_;
 	MptAudioCapture *audio_capture_ = nullptr;
+	obs_source_t *obs_audio_source_ = nullptr;
+	uint32_t obs_audio_sample_rate_ = 0;
+	enum audio_format obs_audio_format_ = AUDIO_FORMAT_UNKNOWN;
+	enum speaker_layout obs_audio_speakers_ = SPEAKERS_UNKNOWN;
+	uint64_t next_obs_audio_attach_attempt_ns_ = 0;
+	bool obs_audio_attach_warning_logged_ = false;
+	std::mutex audio_windows_mutex_;
+	std::deque<AudioAnalysisWindow> audio_windows_;
 #ifdef _WIN32
 	std::atomic<HWAVEIN> wave_in_ {nullptr};
 	uint16_t audio_channels_ = 1;
@@ -1297,6 +1594,23 @@ private:
 	float env_lp_ = 0.0f;
 	int mouth_shape_index_ = 0;
 };
+
+static bool enum_obs_audio_source_for_list(void *param, obs_source_t *source)
+{
+	auto *list = reinterpret_cast<obs_property_t *>(param);
+	if (!list || !source)
+		return true;
+	if ((obs_source_get_output_flags(source) & OBS_SOURCE_AUDIO) == 0)
+		return true;
+
+	const char *uuid = obs_source_get_uuid(source);
+	if (!has_text(uuid))
+		return true;
+
+	const char *name = obs_source_get_name(source);
+	obs_property_list_add_string(list, has_text(name) ? name : uuid, uuid);
+	return true;
+}
 
 } // namespace
 
@@ -1321,6 +1635,19 @@ extern "C" void mpt_native_populate_audio_devices(obs_property_t *list)
 			device.label = std::to_string(device.index) + " " + device.name;
 		obs_property_list_add_string(list, device.label.c_str(), device.identity_json.c_str());
 	}
+}
+
+extern "C" void mpt_native_populate_obs_audio_sources(obs_property_t *list)
+{
+	if (!list)
+		return;
+
+	obs_property_list_clear(list);
+	obs_property_list_add_string(list, mpt_text("MotionPngTuberPlayer.AudioSyncSourceAuto"),
+				     kAutoObsAudioSourceSelection);
+	obs_property_list_add_string(list, mpt_text("MotionPngTuberPlayer.AudioSyncSourceNone"),
+				     kDirectInputAudioSourceSelection);
+	obs_enum_sources(&enum_obs_audio_source_for_list, list);
 }
 
 extern "C" bool mpt_native_runtime_create(struct mpt_native_runtime **out_runtime,

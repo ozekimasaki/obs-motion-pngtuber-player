@@ -28,12 +28,14 @@ struct mpt_native_runtime_config {
 	const char *track_file;
 	const char *track_calibrated_file;
 	const char *audio_device_identity_json;
+	const char *audio_sync_source_uuid;
 	const char *valid_policy;
 	long long audio_device_index;
 	long long render_fps;
 };
 
 void mpt_native_populate_audio_devices(obs_property_t *list);
+void mpt_native_populate_obs_audio_sources(obs_property_t *list);
 
 bool mpt_native_runtime_create(struct mpt_native_runtime **out_runtime,
 			       const struct mpt_native_runtime_config *config, char **error_text);
