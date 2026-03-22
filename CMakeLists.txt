@@ -150,6 +150,8 @@ endif()
 
 install(TARGETS ${PROJECT_NAME} LIBRARY DESTINATION ${MPT_PLUGIN_RUNTIME_DESTINATION} RUNTIME DESTINATION ${MPT_PLUGIN_RUNTIME_DESTINATION})
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/ DESTINATION data/obs-plugins/${PROJECT_NAME})
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python/runtime DESTINATION data/obs-plugins/${PROJECT_NAME}/python)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python/runtime DESTINATION data/obs-plugins/${PROJECT_NAME}/python
+        PATTERN "__pycache__" EXCLUDE
+        PATTERN "*.pyc" EXCLUDE)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/python/lipsync_core.py ${CMAKE_CURRENT_SOURCE_DIR}/python/realtime_emotion_audio.py
         DESTINATION data/obs-plugins/${PROJECT_NAME}/python)

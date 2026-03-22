@@ -1,5 +1,7 @@
 # MotionPngTuberPlayer
 
+[日本語 README](./README.JA.MD)
+
 `MotionPngTuberPlayer` is a derivative OBS plugin project for `MotionPNGTuber`.
 
 This directory is intended to be managed as a **separate Git repository** from the main `MotionPNGTuber` project.
@@ -43,7 +45,7 @@ To create a distributable folder/zip locally, run:
 - `powershell -ExecutionPolicy Bypass -File .\\package-release.ps1`
 - To build, tag, and create/update a GitHub release from the current checkout, run: `powershell -ExecutionPolicy Bypass -File .\\release-windows.ps1 -Tag v0.1.0 -PreRelease`
 
-GitHub Actions now includes a build workflow at `.github\\workflows\\windows-ci.yml` that builds the Windows release package and also compiles the non-Windows stub plugin on Linux against `libobs-dev`.
+GitHub Actions now includes a build workflow at `.github\\workflows\\windows-ci.yml` that builds the Windows release package, compiles the non-Windows stub plugin on Linux against `libobs-dev`, uploads both Windows and Linux assets on tag pushes, and exposes a manual macOS stub-build conduit via `workflow_dispatch`.
 
 The local packaging script still produces `dist\\MotionPngTuberPlayer-windows.zip`, but the CI workflow intentionally uploads only the extracted folder so the downloadable Actions artifact does not become a zip containing another zip.
 

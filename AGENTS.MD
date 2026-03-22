@@ -43,10 +43,12 @@
   - frame buffer resize 失敗時に properties / log へ error を出すようにした
   - `install-to-obs.ps1` で 64-bit OBS 配置先チェックを追加
 - packaging / CI
-  - `package-release.ps1` で OBS 配布レイアウトと zip をローカル生成できるようにした
+  - `package-release.ps1` を CMake install ベースに寄せ、Windows / Linux / macOS の package 導線を共有化
   - `release-windows.ps1` で Windows package の build / tag / GitHub release 作成をローカル自動化
   - `.github\workflows\windows-ci.yml` で Windows CI build + package artifact upload を追加
-  - 同 workflow に Linux stub build を追加
+  - 同 workflow に Linux stub build / package / release asset upload を追加
+  - 同 workflow に macOS stub build conduit (`workflow_dispatch`) を追加
+  - 日本語向け `README.JA.MD` を追加し、README 導線も追加
 - macOS / Linux 互換化の下地
   - audio device の列挙 / identity 解決を `mpt-audio-backend.*` に切り出し始めた
   - PNG sprite load を `mpt-image-backend.*` に切り出し始めた
@@ -83,8 +85,8 @@ portable OBS 32.0.4 で次を確認済みです。
 ## 既知の制約
 
 - 実機検証は **Windows が中心**
-- Linux は stub build 導線を追加したが、実機 load / filter 検証は未完
-- macOS は stub build 導線を追加したが、実機 build / load 検証は未完
+- Linux は stub build / package / release 導線を追加したが、実機 load / filter 検証は未完
+- macOS は stub build 導線を追加したが、実機 build / load / release 検証は未完
 - `.npz` は直接パースではなく、**sibling JSON がある前提の互換対応**
 - 通常インストール版 OBS (`C:\Program Files\obs-studio`) へ配置する場合は管理者権限が必要
 - DLL 内 fallback はあるが、配布物としては `data\obs-plugins\MotionPngTuberPlayer\locale\` 同梱を推奨
