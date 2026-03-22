@@ -18,6 +18,9 @@ from PIL import Image, ImageChops
 
 SOURCE_KIND = "motionpngtuber_player"
 PROP_AUDIO_DEVICE_IDENTITY = "audio_device_identity"
+SMOKE_CAPTURE_WIDTH = 320
+SMOKE_CAPTURE_HEIGHT = 240
+SCENE_COLLECTION_SAVE_SUFFIX = " Save Checkpoint"
 
 
 class ObsRequestError(RuntimeError):
@@ -180,6 +183,99 @@ def ensure_scene(client: ObsWebSocketClient, scene_name: str) -> None:
     client.request("SetCurrentProgramScene", {"sceneName": scene_name})
 
 
+def get_scene_names(client: ObsWebSocketClient) -> list[str]:
+    response = client.request("GetSceneList")
+    scenes = response.get("scenes", [])
+    names: list[str] = []
+    if isinstance(scenes, list):
+        for entry in scenes:
+            if not isinstance(entry, dict):
+                continue
+            scene_name = entry.get("sceneName")
+            if isinstance(scene_name, str):
+                names.append(scene_name)
+    return names
+
+
+def select_existing_scene(client: ObsWebSocketClient, scene_name: str) -> None:
+    scene_names = get_scene_names(client)
+    assert_true(scene_name in scene_names, f"{scene_name} should still exist after OBS restart")
+    client.request("SetCurrentProgramScene", {"sceneName": scene_name})
+
+
+def get_scene_collection_state(client: ObsWebSocketClient) -> tuple[str | None, list[str]]:
+    response = client.request("GetSceneCollectionList")
+    current = response.get("currentSceneCollectionName")
+    current_name = current if isinstance(current, str) else None
+    raw_collections = response.get("sceneCollections", [])
+    collection_names: list[str] = []
+
+    if isinstance(raw_collections, list):
+        for entry in raw_collections:
+            if isinstance(entry, str):
+                collection_names.append(entry)
+                continue
+            if not isinstance(entry, dict):
+                continue
+            for key in ("sceneCollectionName", "sceneCollection", "name"):
+                value = entry.get(key)
+                if isinstance(value, str):
+                    collection_names.append(value)
+                    break
+
+    if current_name and current_name not in collection_names:
+        collection_names.append(current_name)
+    return current_name, collection_names
+
+
+def ensure_scene_collection(
+    client: ObsWebSocketClient,
+    scene_collection_name: str,
+    *,
+    create_if_missing: bool,
+) -> None:
+    current_name, collection_names = get_scene_collection_state(client)
+    if current_name == scene_collection_name:
+        return
+
+    if scene_collection_name not in collection_names:
+        if not create_if_missing:
+            raise AssertionError(f"{scene_collection_name} should still exist after OBS restart")
+        try:
+            client.request("CreateSceneCollection", {"sceneCollectionName": scene_collection_name})
+        except ObsRequestError as exc:
+            if not is_already_exists_error(exc):
+                raise
+        wait_for_ready(client)
+
+    current_name, _ = get_scene_collection_state(client)
+    if current_name != scene_collection_name:
+        client.request("SetCurrentSceneCollection", {"sceneCollectionName": scene_collection_name})
+        wait_for_ready(client)
+
+
+def force_save_scene_collection(client: ObsWebSocketClient, scene_collection_name: str) -> None:
+    ensure_scene_collection(client, scene_collection_name, create_if_missing=False)
+    _, collection_names = get_scene_collection_state(client)
+    checkpoint_name = f"{scene_collection_name}{SCENE_COLLECTION_SAVE_SUFFIX}"
+
+    if checkpoint_name not in collection_names:
+        try:
+            client.request("CreateSceneCollection", {"sceneCollectionName": checkpoint_name})
+        except ObsRequestError as exc:
+            if not is_already_exists_error(exc):
+                raise
+        wait_for_ready(client)
+
+    current_name, _ = get_scene_collection_state(client)
+    if current_name != checkpoint_name:
+        client.request("SetCurrentSceneCollection", {"sceneCollectionName": checkpoint_name})
+        wait_for_ready(client)
+
+    client.request("SetCurrentSceneCollection", {"sceneCollectionName": scene_collection_name})
+    wait_for_ready(client)
+
+
 def get_input_settings(client: ObsWebSocketClient, source_name: str) -> dict[str, object]:
     response = client.request("GetInputSettings", {"inputName": source_name})
     settings = response.get("inputSettings")
@@ -234,7 +330,7 @@ def get_image_difference_bbox(before: Image.Image, after: Image.Image) -> tuple[
     return difference.getbbox()
 
 
-def capture_screenshot(
+def capture_screenshot_exact(
     client: ObsWebSocketClient,
     source_name: str,
     output_path: Path,
@@ -251,6 +347,8 @@ def capture_screenshot(
                 {
                     "sourceName": source_name,
                     "imageFormat": "png",
+                    "imageWidth": SMOKE_CAPTURE_WIDTH,
+                    "imageHeight": SMOKE_CAPTURE_HEIGHT,
                 },
             )
         except ObsRequestError as exc:
@@ -281,6 +379,21 @@ def capture_screenshot(
     raise RuntimeError(f"Did not receive a nonblank screenshot for {source_name}")
 
 
+def capture_screenshot(
+    client: ObsWebSocketClient,
+    source_names: list[str],
+    output_path: Path,
+    timeout_seconds: float = 30.0,
+) -> tuple[Image.Image, str]:
+    errors: list[str] = []
+    for source_name in source_names:
+        try:
+            return capture_screenshot_exact(client, source_name, output_path, timeout_seconds), source_name
+        except RuntimeError as exc:
+            errors.append(f"{source_name}: {exc}")
+    raise RuntimeError("; ".join(errors))
+
+
 def capture_changed_screenshot(
     client: ObsWebSocketClient,
     source_name: str,
@@ -293,7 +406,7 @@ def capture_changed_screenshot(
 
     while time.time() < deadline:
         remaining_timeout = max(0.1, deadline - time.time())
-        current_image = capture_screenshot(
+        current_image = capture_screenshot_exact(
             client,
             source_name,
             output_path,
@@ -333,6 +446,7 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
     client.connect()
     try:
         wait_for_ready(client)
+        ensure_scene_collection(client, args.scene_collection_name, create_if_missing=True)
         ensure_source_kind_available(client)
         ensure_scene(client, args.scene_name)
 
@@ -367,7 +481,11 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         ).get("propertyItems", [])
         assert_true(bool(property_items), "audio device list should contain at least one entry")
 
-        before_filter = capture_screenshot(client, args.source_name, artifacts_dir / "before-filter.png")
+        before_filter, capture_target = capture_screenshot(
+            client,
+            [args.source_name, args.scene_name],
+            artifacts_dir / "before-filter.png",
+        )
         before_filter_extent = get_nonblank_extent(before_filter)
         assert_true(before_filter_extent is not None, "before-filter screenshot should contain visible content")
         client.request(
@@ -390,7 +508,7 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         # The smoke video is static, so the rendered scene should change as soon as the crop filter takes effect.
         after_filter = capture_changed_screenshot(
             client,
-            args.source_name,
+            capture_target,
             before_filter,
             artifacts_dir / "after-filter.png",
         )
@@ -416,6 +534,16 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         assert_equal(int(updated_settings.get("render_fps", 0)), 24, "updated render_fps")
         assert_equal(str(updated_settings.get("valid_policy", "")), "strict", "updated valid_policy")
 
+        force_save_scene_collection(client, args.scene_collection_name)
+        reloaded_settings = get_input_settings(client, args.source_name)
+        assert_equal(int(reloaded_settings.get("render_fps", 0)), 24, "reloaded render_fps")
+        assert_equal(str(reloaded_settings.get("valid_policy", "")), "strict", "reloaded valid_policy")
+        reloaded_filter_settings = get_filter_settings(client, args.source_name, args.filter_name)
+        assert_equal(int(reloaded_filter_settings.get("left", 0)), crop.left, "reloaded crop_filter left")
+        assert_equal(int(reloaded_filter_settings.get("right", 0)), crop.right, "reloaded crop_filter right")
+        assert_equal(int(reloaded_filter_settings.get("top", 0)), crop.top, "reloaded crop_filter top")
+        assert_equal(int(reloaded_filter_settings.get("bottom", 0)), crop.bottom, "reloaded crop_filter bottom")
+
         summary = {
             "before_filter_size": list(before_filter.size),
             "after_filter_size": list(after_filter.size),
@@ -423,6 +551,7 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
             "after_filter_content_size": [after_filter_extent.width, after_filter_extent.height],
             "filter_difference_bbox": list(difference_bbox) if difference_bbox is not None else None,
             "audio_device_items": len(property_items),
+            "capture_target": capture_target,
         }
         (artifacts_dir / "summary-create.json").write_text(json.dumps(summary, indent=2), encoding="utf-8", newline="\n")
         time.sleep(3.0)
@@ -443,8 +572,9 @@ def run_reopen_phase(args: argparse.Namespace) -> dict[str, object]:
     client.connect()
     try:
         wait_for_ready(client)
+        ensure_scene_collection(client, args.scene_collection_name, create_if_missing=False)
         ensure_source_kind_available(client)
-        ensure_scene(client, args.scene_name)
+        select_existing_scene(client, args.scene_name)
 
         inputs = client.request("GetInputList", {"inputKind": SOURCE_KIND}).get("inputs", [])
         source_names = [entry.get("inputName") for entry in inputs if isinstance(entry, dict)]
@@ -467,11 +597,16 @@ def run_reopen_phase(args: argparse.Namespace) -> dict[str, object]:
         assert_equal(int(filter_settings.get("top", 0)), crop.top, "persisted crop_filter top")
         assert_equal(int(filter_settings.get("bottom", 0)), crop.bottom, "persisted crop_filter bottom")
 
-        restarted_image = capture_screenshot(client, args.source_name, artifacts_dir / "after-restart.png")
+        restarted_image, restart_capture_target = capture_screenshot(
+            client,
+            [args.source_name, args.scene_name],
+            artifacts_dir / "after-restart.png",
+        )
         assert_true(restarted_image.width > 0 and restarted_image.height > 0, "restart screenshot must be non-empty")
 
         summary = {
             "after_restart_size": list(restarted_image.size),
+            "capture_target": restart_capture_target,
         }
         (artifacts_dir / "summary-reopen.json").write_text(json.dumps(summary, indent=2), encoding="utf-8", newline="\n")
         return summary
