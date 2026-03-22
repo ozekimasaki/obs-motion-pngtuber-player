@@ -387,7 +387,7 @@ jobs:
       - name: Install Linux OBS smoke dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y obs-studio ffmpeg libportaudio2 python3-venv xvfb xdotool
+          sudo apt-get install -y obs-studio ffmpeg libportaudio2 python3-venv xvfb xdotool openbox
 
       - name: Download Linux package
         uses: actions/download-artifact@v8
@@ -421,6 +421,7 @@ jobs:
           export OBS_CONFIG_ROOT="$XDG_CONFIG_HOME/obs-studio"
           export OBS_RESULTS="$RUNNER_TEMP/mpt-smoke-artifacts"
           export OBS_STDOUT_LOG="$RUNNER_TEMP/obs-linux.stdout.log"
+          export OPENBOX_LOG="$RUNNER_TEMP/openbox.log"
           export OBS_PID_FILE="$RUNNER_TEMP/obs-linux.pid"
           export PYTHON_BIN="$RUNNER_TEMP/mpt-smoke-venv/bin/python"
           export OBS_URL="ws://127.0.0.1:${OBS_WEBSOCKET_PORT}"
@@ -431,8 +432,22 @@ jobs:
 
           Xvfb :99 -screen 0 1920x1080x24 >"$RUNNER_TEMP/xvfb.log" 2>&1 &
           XVFB_PID=$!
+          sleep 2
+          HOME="$SMOKE_HOME" openbox --sm-disable >"$OPENBOX_LOG" 2>&1 &
+          OPENBOX_PID=$!
+          for _ in $(seq 1 5); do
+            if ! kill -0 "$OPENBOX_PID" 2>/dev/null; then
+              cat "$OPENBOX_LOG" >&2 || true
+              exit 1
+            fi
+            sleep 1
+          done
 
           start_obs() {
+            if ! kill -0 "$OPENBOX_PID" 2>/dev/null; then
+              cat "$OPENBOX_LOG" >&2 || true
+              return 1
+            fi
             HOME="$SMOKE_HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" "${{ steps.obs_layout.outputs.obs_executable }}" \
               --disable-shutdown-check \
               --disable-missing-files-check \
@@ -449,9 +464,10 @@ jobs:
             local obs_pid="$1"
             while read -r window_id; do
               if [[ -n "$window_id" ]]; then
+                xdotool windowactivate --sync "$window_id" 2>/dev/null || true
                 xdotool windowclose "$window_id" 2>/dev/null || true
               fi
-            done < <(xdotool search --pid "$obs_pid" 2>/dev/null || true)
+            done < <(xdotool search --onlyvisible --pid "$obs_pid" 2>/dev/null || true)
           }
 
           stop_obs() {
@@ -486,7 +502,10 @@ jobs:
 
           cleanup() {
             stop_obs || true
-            if kill -0 "$XVFB_PID" 2>/dev/null; then
+            if [[ -n "${OPENBOX_PID:-}" ]] && kill -0 "$OPENBOX_PID" 2>/dev/null; then
+              kill -TERM "$OPENBOX_PID" 2>/dev/null || true
+            fi
+            if [[ -n "${XVFB_PID:-}" ]] && kill -0 "$XVFB_PID" 2>/dev/null; then
               kill -TERM "$XVFB_PID" 2>/dev/null || true
             fi
           }
@@ -526,7 +545,9 @@ jobs:
             ${{ runner.temp }}/obs-smoke-home/.config/obs-studio/global.ini
             ${{ runner.temp }}/obs-linux.stdout.log
             ${{ runner.temp }}/obs-smoke-home/.config/obs-studio/plugin_config/obs-websocket
+            ${{ runner.temp }}/obs-smoke-home/.config/obs-studio/basic
             ${{ runner.temp }}/xvfb.log
+            ${{ runner.temp }}/openbox.log
             ${{ runner.temp }}/obs-smoke-home/.config/obs-studio/logs
           if-no-files-found: warn
           retention-days: 14
@@ -586,19 +607,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          export SMOKE_HOME="$RUNNER_TEMP/obs-smoke-home"
-          export OBS_CONFIG_ROOT="$SMOKE_HOME/Library/Application Support/obs-studio"
+          export OBS_CONFIG_ROOT="$HOME/Library/Application Support/obs-studio"
+          export OBS_CONFIG_BACKUP="$RUNNER_TEMP/obs-macos-config-backup"
+          export OBS_TEST_CONFIG_MARKER="$RUNNER_TEMP/obs-macos-test-config.marker"
           export OBS_RESULTS="$RUNNER_TEMP/mpt-smoke-artifacts"
           export OBS_STDOUT_LOG="$RUNNER_TEMP/obs-macos.stdout.log"
           export OBS_PID_FILE="$RUNNER_TEMP/obs-macos.pid"
           export PYTHON_BIN="$RUNNER_TEMP/mpt-smoke-venv/bin/python"
           export OBS_URL="ws://127.0.0.1:${OBS_WEBSOCKET_PORT}"
 
-          rm -rf "$SMOKE_HOME" "$OBS_RESULTS"
+          rm -rf "$OBS_RESULTS" "$OBS_CONFIG_BACKUP"
+          rm -f "$OBS_TEST_CONFIG_MARKER"
+          if [[ -d "$OBS_CONFIG_ROOT" ]]; then
+            mv "$OBS_CONFIG_ROOT" "$OBS_CONFIG_BACKUP"
+          fi
           mkdir -p "$OBS_CONFIG_ROOT"
+          : >"$OBS_TEST_CONFIG_MARKER"
 
           start_obs() {
-            HOME="$SMOKE_HOME" "${{ steps.obs_layout.outputs.obs_executable }}" \
+            "${{ steps.obs_layout.outputs.obs_executable }}" \
               --disable-shutdown-check \
               --disable-missing-files-check \
               --multi \
@@ -677,6 +704,25 @@ jobs:
             --asset-dir "$RUNNER_TEMP/mpt-smoke-assets" \
             --artifacts-dir "$OBS_RESULTS"
 
+      - name: Collect macOS smoke artifacts
+        if: failure()
+        run: |
+          set -euo pipefail
+
+          archive_root="${{ runner.temp }}/macos-smoke-debug"
+          rm -rf "$archive_root"
+          mkdir -p "$archive_root"
+
+          if [[ -d "$HOME/Library/Application Support/obs-studio" ]]; then
+            mkdir -p "$archive_root/obs-studio"
+            cp -a "$HOME/Library/Application Support/obs-studio/." "$archive_root/obs-studio/"
+          fi
+
+          if [[ -d "$HOME/Library/Logs" ]]; then
+            mkdir -p "$archive_root/Library Logs"
+            cp -a "$HOME/Library/Logs/." "$archive_root/Library Logs/" || true
+          fi
+
       - name: Upload macOS smoke artifacts
         if: failure()
         uses: actions/upload-artifact@v6
@@ -684,13 +730,27 @@ jobs:
           name: macos-smoke-artifacts
           path: |
             ${{ runner.temp }}/mpt-smoke-artifacts
-            ${{ runner.temp }}/obs-smoke-home/Library/Application Support/obs-studio/global.ini
+            ${{ runner.temp }}/macos-smoke-debug
             ${{ runner.temp }}/obs-macos.stdout.log
-            ${{ runner.temp }}/obs-smoke-home/Library/Application Support/obs-studio/plugin_config/obs-websocket
-            ${{ runner.temp }}/obs-smoke-home/Library/Application Support/obs-studio/logs
-            ${{ runner.temp }}/obs-smoke-home/Library/Logs
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Restore macOS OBS config
+        if: always()
+        run: |
+          set -euo pipefail
+
+          config_root="$HOME/Library/Application Support/obs-studio"
+          backup_root="${{ runner.temp }}/obs-macos-config-backup"
+          marker_path="${{ runner.temp }}/obs-macos-test-config.marker"
+
+          if [[ -d "$backup_root" ]]; then
+            rm -rf "$config_root"
+            mv "$backup_root" "$config_root"
+          elif [[ -f "$marker_path" ]]; then
+            rm -rf "$config_root"
+          fi
+          rm -f "$marker_path"
 
   publish-release:
     if: startsWith(github.ref, 'refs/tags/v')
