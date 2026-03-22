@@ -71,15 +71,14 @@ sudo apt-get install -y cmake ninja-build pkg-config libobs-dev
 bash ./ci/build-nonwindows-stub.sh build-linux-stub
 ```
 
-macOS は現在、**OBS / libobs の開発用パスを自前で見せる前提** です。次のいずれかを設定してください。
+macOS は現在、**OBS.app に同梱される `libobs` バイナリを見せる前提** です。たとえば次を設定してください。
 
-- `libobs_DIR`
-- `PKG_CONFIG_PATH`
-- `OBS_PREFIX`
+- `MPT_MACOS_OBS_LIBRARY=/Applications/OBS.app/Contents/Frameworks/libobs.framework/libobs`
 
 補足:
 
-- Homebrew cask の `obs` は runtime 導線としては有用ですが、plugin build には開発用 header / metadata が別途必要です。
+- 現在の macOS stub build は、repo 内 fallback header + `OBS.app` 同梱 `libobs` の組み合わせで回します。
+- そのため Homebrew cask の `obs` だけでも GitHub Actions / ローカル stub build 導線に使えます。
 
 ## パッケージ化
 

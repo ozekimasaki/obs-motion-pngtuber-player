@@ -118,7 +118,7 @@ jobs:
           brew install cmake ninja pkgconf
           brew install --cask obs
 
-      - name: Detect macOS OBS framework
+      - name: Detect macOS libobs framework
         id: macos_obs
         run: |
           obs_app_root="/Applications/OBS.app"
@@ -126,16 +126,6 @@ jobs:
             echo "::error::OBS.app was not found at ${obs_app_root} after installation."
             exit 1
           fi
-
-          headers_dir=""
-          for candidate in \
-            "${obs_app_root}/Contents/Frameworks/libobs.framework/Headers" \
-            "${obs_app_root}/Contents/Frameworks/libobs.framework/Versions/A/Headers"; do
-            if [[ -f "${candidate}/obs-module.h" && -f "${candidate}/util/bmem.h" ]]; then
-              headers_dir="${candidate}"
-              break
-            fi
-          done
 
           library_path=""
           for candidate in \
@@ -148,20 +138,17 @@ jobs:
             fi
           done
 
-          if [[ -z "${headers_dir}" || -z "${library_path}" ]]; then
-            echo "::error::Could not locate libobs headers and library inside OBS.app."
-            find "${obs_app_root}/Contents/Frameworks" -maxdepth 3 \( -name obs-module.h -o -name libobs -o -name 'libobs*.dylib' \) -print || true
+          if [[ -z "${library_path}" ]]; then
+            echo "::error::Could not locate the libobs framework binary inside OBS.app."
+            find "${obs_app_root}/Contents/Frameworks" -maxdepth 3 \( -name libobs -o -name 'libobs*.dylib' \) -print || true
             exit 1
           fi
 
-          echo "headers_dir=${headers_dir}" >> "$GITHUB_OUTPUT"
           echo "library_path=${library_path}" >> "$GITHUB_OUTPUT"
-          echo "Using macOS OBS headers at ${headers_dir}"
           echo "Using macOS libobs at ${library_path}"
 
       - name: Configure and build macOS stub plugin
         env:
-          MPT_MACOS_OBS_HEADERS_DIR: ${{ steps.macos_obs.outputs.headers_dir }}
           MPT_MACOS_OBS_LIBRARY: ${{ steps.macos_obs.outputs.library_path }}
         run: bash ./ci/build-nonwindows-stub.sh build-macos-stub
 

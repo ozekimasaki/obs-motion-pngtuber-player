@@ -8,7 +8,7 @@
 #define UNUSED_PARAMETER(param) (void)(param)
 #endif
 
-#ifdef MPT_WINDOWS_FALLBACK_OBS
+#ifdef MPT_FALLBACK_OBS
 #include "mpt-obs-module.h"
 #include "mpt-obs-util.h"
 #else

@@ -1,6 +1,6 @@
 #include "motionpngtuber-source.h"
 
-#ifdef MPT_WINDOWS_FALLBACK_OBS
+#ifdef MPT_FALLBACK_OBS
 #include "mpt-obs-module.h"
 #include "mpt-obs-util.h"
 #else
@@ -102,6 +102,15 @@ static bool path_has_separator(char ch)
 	return ch == '\\' || ch == '/';
 }
 
+static char preferred_path_separator(void)
+{
+#ifdef _WIN32
+	return '\\';
+#else
+	return '/';
+#endif
+}
+
 #ifdef _WIN32
 static wchar_t *utf8_to_wide_dup(const char *text)
 {
@@ -167,7 +176,7 @@ static void build_child_path(struct dstr *out, const char *dir, const char *name
 {
 	dstr_copy(out, dir);
 	if (out->len > 0 && !path_has_separator(out->array[out->len - 1]))
-		dstr_cat_ch(out, '\\');
+		dstr_cat_ch(out, preferred_path_separator());
 	dstr_cat(out, name);
 }
 

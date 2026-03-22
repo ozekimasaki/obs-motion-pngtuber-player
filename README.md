@@ -80,15 +80,13 @@ Linux stub builds are expected to work with:
 - `cmake`
 - `ninja-build`
 
-macOS stub builds now have a GitHub Actions path too. The hosted `macos-14` runner installs `OBS.app`, locates the bundled `libobs` framework, and uses that to produce the macOS stub release asset.
+macOS stub builds now have a GitHub Actions path too. The hosted `macos-14` runner installs `OBS.app`, locates the bundled `libobs` framework, and uses the repository's local fallback headers plus the app-bundled `libobs` binary to produce the macOS stub release asset.
 
-For local macOS stub builds, you still need an OBS / `libobs` development install exposed through either:
+For local macOS stub builds, install `OBS.app` and point `MPT_MACOS_OBS_LIBRARY` at the bundled `libobs` binary, for example:
 
-- `libobs_DIR`
-- `PKG_CONFIG_PATH`
-- `OBS_PREFIX`
+- `MPT_MACOS_OBS_LIBRARY=/Applications/OBS.app/Contents/Frameworks/libobs.framework/libobs`
 
-The Homebrew cask `obs` is useful for runtime installation, but a stub plugin build still needs development headers / metadata from an OBS or `libobs` build.
+The Homebrew cask `obs` is therefore enough for the current macOS stub build path.
 
 ## Track note
 

@@ -1,11 +1,20 @@
 #include "mpt-obs-util.h"
 
 #include <errno.h>
-#include <malloc.h>
-#include <process.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <malloc.h>
+#include <process.h>
+#else
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+#endif
+
+#ifdef _WIN32
 
 struct os_process_args {
 	char **args;
@@ -101,7 +110,11 @@ void dstr_catf(struct dstr *dst, const char *format, ...)
 	va_start(args, format);
 	va_list args_copy;
 	va_copy(args_copy, args);
+#ifdef _WIN32
 	int required = _vscprintf(format, args_copy);
+#else
+	int required = vsnprintf(NULL, 0, format, args_copy);
+#endif
 	va_end(args_copy);
 	if (required < 0) {
 		va_end(args);
@@ -597,3 +610,363 @@ int os_process_pipe_destroy(os_process_pipe_t *pipe)
 	free(pipe);
 	return (int)exit_code;
 }
+
+#else
+
+static bool dstr_reserve(struct dstr *dst, size_t needed)
+{
+	if (needed <= dst->capacity)
+		return true;
+
+	size_t new_capacity = dst->capacity ? dst->capacity : 64;
+	while (new_capacity < needed)
+		new_capacity *= 2;
+
+	char *new_array = (char *)brealloc(dst->array, new_capacity);
+	if (!new_array)
+		return false;
+
+	dst->array = new_array;
+	dst->capacity = new_capacity;
+	return true;
+}
+
+void dstr_copy(struct dstr *dst, const char *src)
+{
+	dst->len = 0;
+	if (dst->array)
+		dst->array[0] = '\0';
+
+	if (!src)
+		return;
+
+	size_t src_len = strlen(src);
+	if (!dstr_reserve(dst, src_len + 1))
+		return;
+
+	memcpy(dst->array, src, src_len + 1);
+	dst->len = src_len;
+}
+
+void dstr_cat(struct dstr *dst, const char *src)
+{
+	if (!src)
+		return;
+
+	size_t src_len = strlen(src);
+	if (!dstr_reserve(dst, dst->len + src_len + 1))
+		return;
+
+	memcpy(dst->array + dst->len, src, src_len + 1);
+	dst->len += src_len;
+}
+
+void dstr_cat_ch(struct dstr *dst, char ch)
+{
+	if (!dstr_reserve(dst, dst->len + 2))
+		return;
+
+	dst->array[dst->len++] = ch;
+	dst->array[dst->len] = '\0';
+}
+
+void dstr_cat_dstr(struct dstr *dst, const struct dstr *src)
+{
+	if (!src || !src->array)
+		return;
+	dstr_cat(dst, src->array);
+}
+
+void dstr_catf(struct dstr *dst, const char *format, ...)
+{
+	va_list args;
+	va_start(args, format);
+	va_list args_copy;
+	va_copy(args_copy, args);
+	int required = vsnprintf(NULL, 0, format, args_copy);
+	va_end(args_copy);
+	if (required < 0) {
+		va_end(args);
+		return;
+	}
+
+	if (!dstr_reserve(dst, dst->len + (size_t)required + 1)) {
+		va_end(args);
+		return;
+	}
+
+	vsnprintf(dst->array + dst->len, dst->capacity - dst->len, format, args);
+	dst->len += (size_t)required;
+	va_end(args);
+}
+
+void dstr_free(struct dstr *dst)
+{
+	if (dst->array)
+		bfree(dst->array);
+	dst->array = NULL;
+	dst->len = 0;
+	dst->capacity = 0;
+}
+
+void *bzalloc(size_t size)
+{
+	void *memory = bmalloc(size);
+	if (memory)
+		memset(memory, 0, size);
+	return memory;
+}
+
+char *bstrdup(const char *text)
+{
+	if (!text)
+		return NULL;
+	size_t length = strlen(text) + 1;
+	char *copy = (char *)bmalloc(length);
+	if (!copy)
+		return NULL;
+	memcpy(copy, text, length);
+	return copy;
+}
+
+struct os_process_args {
+	char **args;
+	size_t count;
+	size_t capacity;
+};
+
+int os_event_init(os_event_t **event, int type)
+{
+	if (!event)
+		return EINVAL;
+
+	os_event_t *created = (os_event_t *)calloc(1, sizeof(*created));
+	if (!created)
+		return ENOMEM;
+
+	if (pthread_mutex_init(&created->mutex, NULL) != 0) {
+		free(created);
+		return EINVAL;
+	}
+
+	created->manual = type == OS_EVENT_TYPE_MANUAL;
+	created->signaled = false;
+	*event = created;
+	return 0;
+}
+
+void os_event_destroy(os_event_t *event)
+{
+	if (!event)
+		return;
+
+	pthread_mutex_destroy(&event->mutex);
+	free(event);
+}
+
+void os_event_signal(os_event_t *event)
+{
+	if (!event)
+		return;
+
+	pthread_mutex_lock(&event->mutex);
+	event->signaled = true;
+	pthread_mutex_unlock(&event->mutex);
+}
+
+int os_event_try(os_event_t *event)
+{
+	if (!event)
+		return EINVAL;
+
+	int result = EAGAIN;
+	pthread_mutex_lock(&event->mutex);
+	if (event->signaled) {
+		result = 0;
+		if (!event->manual)
+			event->signaled = false;
+	}
+	pthread_mutex_unlock(&event->mutex);
+	return result;
+}
+
+void os_utf8_to_wcs_ptr(const char *src, size_t src_len, wchar_t **dst)
+{
+	if (dst)
+		*dst = NULL;
+	if (!src || !dst)
+		return;
+
+	size_t input_len = src_len ? src_len : strlen(src);
+	char *copy = (char *)malloc(input_len + 1);
+	if (!copy)
+		return;
+
+	memcpy(copy, src, input_len);
+	copy[input_len] = '\0';
+
+	size_t needed = mbstowcs(NULL, copy, 0);
+	if (needed == (size_t)-1) {
+		free(copy);
+		return;
+	}
+
+	wchar_t *buffer = (wchar_t *)bmalloc((needed + 1) * sizeof(wchar_t));
+	if (!buffer) {
+		free(copy);
+		return;
+	}
+
+	if (mbstowcs(buffer, copy, needed + 1) == (size_t)-1) {
+		free(copy);
+		bfree(buffer);
+		return;
+	}
+
+	*dst = buffer;
+	free(copy);
+}
+
+bool os_file_exists(const char *path)
+{
+	return path && *path && access(path, F_OK) == 0;
+}
+
+FILE *os_fopen(const char *path, const char *mode)
+{
+	if (!path || !mode)
+		return NULL;
+	return fopen(path, mode);
+}
+
+static int create_directory_utf8(const char *path)
+{
+	if (!path || !*path)
+		return -1;
+	if (mkdir(path, 0777) == 0)
+		return MKDIR_SUCCESS;
+	return errno == EEXIST ? MKDIR_EXISTS : -1;
+}
+
+int os_mkdirs(const char *path)
+{
+	if (!path || !*path)
+		return -1;
+
+	char *scratch = bstrdup(path);
+	if (!scratch)
+		return -1;
+
+	for (char *cursor = scratch; *cursor; ++cursor) {
+		if (*cursor != '/' && *cursor != '\\')
+			continue;
+		if (cursor == scratch)
+			continue;
+
+		char original = *cursor;
+		*cursor = '\0';
+		if (*scratch) {
+			int result = create_directory_utf8(scratch);
+			if (result != MKDIR_SUCCESS && result != MKDIR_EXISTS) {
+				bfree(scratch);
+				return result;
+			}
+		}
+		*cursor = original;
+	}
+
+	int final_result = create_directory_utf8(scratch);
+	bfree(scratch);
+	return final_result;
+}
+
+uint64_t os_gettime_ns(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+void os_sleepto_ns(uint64_t target_time_ns)
+{
+	for (;;) {
+		uint64_t now = os_gettime_ns();
+		if (now >= target_time_ns)
+			return;
+
+		uint64_t remaining_ns = target_time_ns - now;
+		struct timespec sleep_time;
+		sleep_time.tv_sec = (time_t)(remaining_ns / 1000000000ULL);
+		sleep_time.tv_nsec = (long)(remaining_ns % 1000000000ULL);
+		nanosleep(&sleep_time, NULL);
+	}
+}
+
+os_process_args_t *os_process_args_create(const char *program)
+{
+	os_process_args_t *args = (os_process_args_t *)calloc(1, sizeof(*args));
+	if (!args)
+		return NULL;
+
+	os_process_args_add_arg(args, program);
+	return args;
+}
+
+void os_process_args_destroy(os_process_args_t *args)
+{
+	if (!args)
+		return;
+
+	for (size_t idx = 0; idx < args->count; ++idx)
+		bfree(args->args[idx]);
+	free(args->args);
+	free(args);
+}
+
+void os_process_args_add_arg(os_process_args_t *args, const char *arg)
+{
+	if (!args)
+		return;
+
+	if (args->count == args->capacity) {
+		size_t new_capacity = args->capacity ? args->capacity * 2 : 8;
+		char **new_args = (char **)realloc(args->args, new_capacity * sizeof(*new_args));
+		if (!new_args)
+			return;
+		args->args = new_args;
+		args->capacity = new_capacity;
+	}
+
+	args->args[args->count++] = bstrdup(arg ? arg : "");
+}
+
+os_process_pipe_t *os_process_pipe_create2(os_process_args_t *args, const char *mode)
+{
+	UNUSED_PARAMETER(args);
+	UNUSED_PARAMETER(mode);
+	return NULL;
+}
+
+size_t os_process_pipe_read(os_process_pipe_t *pipe, uint8_t *buffer, size_t size)
+{
+	UNUSED_PARAMETER(pipe);
+	UNUSED_PARAMETER(buffer);
+	UNUSED_PARAMETER(size);
+	return 0;
+}
+
+size_t os_process_pipe_read_err(os_process_pipe_t *pipe, uint8_t *buffer, size_t size)
+{
+	UNUSED_PARAMETER(pipe);
+	UNUSED_PARAMETER(buffer);
+	UNUSED_PARAMETER(size);
+	return 0;
+}
+
+int os_process_pipe_destroy(os_process_pipe_t *pipe)
+{
+	UNUSED_PARAMETER(pipe);
+	return -1;
+}
+
+#endif
