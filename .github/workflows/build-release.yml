@@ -667,6 +667,7 @@ jobs:
           export OBS_PID_FILE="$RUNNER_TEMP/obs-macos.pid"
           export PYTHON_BIN="$RUNNER_TEMP/mpt-smoke-venv/bin/python"
           export OBS_URL="ws://127.0.0.1:${OBS_WEBSOCKET_PORT}"
+          export MPT_CI_KEEP_RENDERING=1
 
           rm -rf "$OBS_RESULTS" "$OBS_CONFIG_BACKUP"
           rm -f "$OBS_TEST_CONFIG_MARKER"

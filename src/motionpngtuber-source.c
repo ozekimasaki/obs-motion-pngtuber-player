@@ -13,6 +13,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -46,6 +47,9 @@ struct motionpngtuber_source {
 	pthread_mutex_t mutex;
 	bool thread_started;
 	bool active;
+#ifdef __APPLE__
+	bool keep_rendering_when_hidden;
+#endif
 	bool runtime_ready;
 	bool runtime_dirty;
 
@@ -303,6 +307,8 @@ static void motionpngtuber_rebuild_runtime_locked(struct motionpngtuber_source *
 	char *error_text = NULL;
 	if (!mpt_native_runtime_create(&context->runtime, &config, &error_text)) {
 		replace_string(&context->last_error, error_text ? error_text : "Native runtime initialization failed.");
+		obs_log(LOG_ERROR, "failed to initialize MotionPngTuberPlayer runtime: %s",
+			context->last_error ? context->last_error : "Native runtime initialization failed.");
 		if (error_text)
 			bfree(error_text);
 		return;
@@ -360,7 +366,18 @@ static void *motionpngtuber_video_thread(void *data)
 			frame_interval_ns = 1000000000ULL / (uint64_t)context->render_fps;
 
 		motionpngtuber_rebuild_runtime_locked(context);
-		if (context->active && context->runtime) {
+		bool should_render = false;
+#ifdef __APPLE__
+		/*
+		 * macOS CI can request this explicitly so scene/source screenshots keep
+		 * receiving frames even when OBS does not drive show/hide callbacks.
+		 */
+		should_render = context->runtime != NULL &&
+				(context->active || context->keep_rendering_when_hidden);
+#else
+		should_render = context->active && context->runtime != NULL;
+#endif
+		if (should_render) {
 			uint8_t *native_frame = NULL;
 			size_t native_size = 0;
 			uint32_t native_width = 0;
@@ -641,6 +658,13 @@ static void *motionpngtuber_create(obs_data_t *settings, obs_source_t *source)
 	context->source = source;
 	context->active = true;
 	context->runtime_dirty = true;
+#ifdef __APPLE__
+	{
+		const char *keep_rendering = getenv("MPT_CI_KEEP_RENDERING");
+		context->keep_rendering_when_hidden =
+			keep_rendering && *keep_rendering && strcmp(keep_rendering, "0") != 0;
+	}
+#endif
 
 	if (pthread_mutex_init(&context->mutex, NULL) != 0) {
 		bfree(context);
