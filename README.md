@@ -42,12 +42,19 @@ To deploy the current build into OBS on Windows, run:
 
 To create a distributable folder/zip locally, run:
 
-- `powershell -ExecutionPolicy Bypass -File .\\package-release.ps1`
+- `powershell -ExecutionPolicy Bypass -File .\\package-release.ps1 -PackageName MotionPngTuberPlayer-obs-plugin-windows-x64`
 - To build, tag, and create/update a GitHub release from the current checkout, run: `powershell -ExecutionPolicy Bypass -File .\\release-windows.ps1 -Tag v0.1.0 -PreRelease`
 
-GitHub Actions now includes a build workflow at `.github\\workflows\\windows-ci.yml` that builds the Windows release package, compiles the non-Windows stub plugin on Linux against `libobs-dev`, uploads both Windows and Linux assets on tag pushes, and exposes a manual macOS stub-build conduit via `workflow_dispatch`.
+GitHub Actions now includes a build workflow at `.github\\workflows\\windows-ci.yml` that builds the Windows release package, compiles the Linux and macOS stub plugins, and publishes all three assets on tag pushes.
 
-The local packaging script still produces `dist\\MotionPngTuberPlayer-windows.zip`, but the CI workflow intentionally uploads only the extracted folder so the downloadable Actions artifact does not become a zip containing another zip.
+The release asset names are now more explicit:
+
+- `MotionPngTuberPlayer-obs-plugin-windows-x64.zip`
+- `MotionPngTuberPlayer-obs-plugin-linux-x64-stub.zip`
+- `MotionPngTuberPlayer-obs-plugin-macos-arm64-stub.zip`
+- `MotionPngTuberPlayer-release-checksums.txt`
+
+The CI workflow still uploads extracted folders as temporary Actions artifacts so the downloadable release assets do not become a zip containing another zip.
 
 The plugin now also has a built-in English/Japanese text fallback in the DLL. If OBS cannot load the external locale files, source and property labels fall back to readable built-in strings instead of raw keys such as `MotionPngTuberPlayer.SourceName`.
 
@@ -73,7 +80,9 @@ Linux stub builds are expected to work with:
 - `cmake`
 - `ninja-build`
 
-macOS stub builds now have a scaffolded path too, but they require an OBS / `libobs` development install exposed through either:
+macOS stub builds now have a GitHub Actions path too. The hosted `macos-14` runner installs `OBS.app`, locates the bundled `libobs` framework, and uses that to produce the macOS stub release asset.
+
+For local macOS stub builds, you still need an OBS / `libobs` development install exposed through either:
 
 - `libobs_DIR`
 - `PKG_CONFIG_PATH`

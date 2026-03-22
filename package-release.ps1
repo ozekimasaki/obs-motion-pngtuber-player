@@ -4,6 +4,7 @@ param(
     [string]$BuildDir = "",
     [ValidateSet("windows", "linux", "macos")]
     [string]$Platform = "",
+    [string]$PackageName = "",
     [string]$OutputDir = "",
     [switch]$NoZip
 )
@@ -63,8 +64,12 @@ if (-not (Test-Path $buildRoot)) {
     throw "Build directory was not found: $buildRoot"
 }
 
+if ([string]::IsNullOrWhiteSpace($PackageName)) {
+    $PackageName = "MotionPngTuberPlayer-$Platform"
+}
+
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
-    $OutputDir = Join-Path $pluginRoot "dist\MotionPngTuberPlayer-$Platform"
+    $OutputDir = Join-Path $pluginRoot "dist\$PackageName"
 }
 
 $packageRoot = [IO.Path]::GetFullPath($OutputDir)

@@ -28,8 +28,8 @@
 - **macOS**
   - stub build 導線あり
   - backend 分離の土台あり
-  - GitHub Actions でも `workflow_dispatch` で build conduit を見せた
-  - ただし GitHub-hosted runner 上の release packaging はまだ未接続
+  - GitHub Actions で OBS.app を入れて stub build / package / release まで回す構成
+  - 現時点では **stub package** 扱い
 
 ## Windows でのビルド
 
@@ -86,7 +86,7 @@ macOS は現在、**OBS / libobs の開発用パスを自前で見せる前提**
 配布レイアウト作成:
 
 ```powershell
-.\package-release.ps1 -Configuration Release
+.\package-release.ps1 -Configuration Release -PackageName MotionPngTuberPlayer-obs-plugin-windows-x64
 ```
 
 Linux package 例:
@@ -101,14 +101,21 @@ pwsh ./package-release.ps1 -BuildDir build-linux-stub -Platform linux
 
 - Windows release package build
 - Linux stub build
+- macOS stub build
 - tag push 時の GitHub release asset 更新
-- `workflow_dispatch` 時の macOS stub build conduit
 
 現時点の release asset 方針:
 
 - Windows: 実利用向け package
 - Linux: stub package
-- macOS: build conduit はあるが、まだ自動 release asset なし
+- macOS: stub package
+
+現在の release asset 名:
+
+- `MotionPngTuberPlayer-obs-plugin-windows-x64.zip`
+- `MotionPngTuberPlayer-obs-plugin-linux-x64-stub.zip`
+- `MotionPngTuberPlayer-obs-plugin-macos-arm64-stub.zip`
+- `MotionPngTuberPlayer-release-checksums.txt`
 
 ## GitHub release
 

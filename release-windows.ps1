@@ -35,8 +35,9 @@ $ghCommand = Get-Command gh -ErrorAction Stop
 $pluginRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = Join-Path $pluginRoot 'build-win-fallback-vs'
 $packageScript = Join-Path $pluginRoot 'package-release.ps1'
-$zipPath = Join-Path $pluginRoot 'dist\MotionPngTuberPlayer-windows.zip'
-$hashPath = Join-Path $pluginRoot 'dist\MotionPngTuberPlayer-windows.sha256.txt'
+$packageName = 'MotionPngTuberPlayer-obs-plugin-windows-x64'
+$zipPath = Join-Path $pluginRoot "dist\$packageName.zip"
+$hashPath = Join-Path $pluginRoot "dist\$packageName.sha256.txt"
 
 Set-Location $pluginRoot
 
@@ -48,11 +49,11 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-& $packageScript -Configuration $Configuration
+& $packageScript -Configuration $Configuration -PackageName $packageName
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-Set-Content -Path $hashPath -Value "$hash  MotionPngTuberPlayer-windows.zip" -Encoding ascii
+Set-Content -Path $hashPath -Value "$hash  $packageName.zip" -Encoding ascii
 
 git rev-parse -q --verify "refs/tags/$Tag" *> $null
 if ($LASTEXITCODE -ne 0) {
@@ -62,8 +63,8 @@ if ($LASTEXITCODE -ne 0) {
 git push origin $Tag
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$releaseNotes = 'Windows-first release. macOS/Linux backend stubs and build scaffolding are included in the source tree, but the packaged asset is currently Windows-only.'
-$assetZip = "$zipPath#MotionPngTuberPlayer Windows package"
+$releaseNotes = 'Windows x64 package release. Linux and macOS stub-build release assets are published by GitHub Actions on tag pushes.'
+$assetZip = "$zipPath#MotionPngTuberPlayer Windows x64 package"
 $assetHash = "$hashPath#SHA256 checksum"
 
 & $ghCommand.Source release view $Tag *> $null
