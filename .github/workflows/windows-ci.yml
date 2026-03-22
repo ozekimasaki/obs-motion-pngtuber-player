@@ -52,7 +52,7 @@ jobs:
         run: .\package-release.ps1 -Configuration Release
 
       - name: Upload Windows package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: MotionPngTuberPlayer-windows
           path: |
