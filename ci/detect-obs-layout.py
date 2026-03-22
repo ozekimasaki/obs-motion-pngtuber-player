@@ -44,19 +44,6 @@ def first_matching_directory(patterns: tuple[str, ...], markers: tuple[str, ...]
     raise FileNotFoundError(f"Could not find an OBS plugin directory containing any of: {marker_text}")
 
 
-def first_directory_with_markers(root: Path, markers: tuple[str, ...]) -> Path:
-    candidates = [root]
-    candidates.extend(sorted(path for path in root.rglob("*") if path.is_dir()))
-
-    for candidate in candidates:
-        for marker in markers:
-            if (candidate / marker).exists():
-                return candidate
-
-    marker_text = ", ".join(markers)
-    raise FileNotFoundError(f"Could not find a directory under {root} containing any of: {marker_text}")
-
-
 def detect_linux_layout() -> dict[str, str]:
     obs_executable = shutil.which("obs")
     if not obs_executable:
@@ -81,34 +68,13 @@ def detect_macos_layout(obs_app_root: Path) -> dict[str, str]:
     if not plugin_bin_dir.is_dir():
         raise FileNotFoundError(f"Could not find the OBS plugin directory at {plugin_bin_dir}")
 
-    resources_root = obs_app_root / "Contents" / "Resources"
-    if not resources_root.is_dir():
-        raise FileNotFoundError(f"Could not find the OBS resources directory at {resources_root}")
-
     marker_found = any((plugin_bin_dir / marker).exists() for marker in PLUGIN_BIN_MARKERS)
     if not marker_found and not any(plugin_bin_dir.rglob("obs-ffmpeg*")):
         raise FileNotFoundError(f"Could not find an existing OBS plugin marker inside {plugin_bin_dir}")
 
-    preferred_data_dirs = (
-        resources_root / "data" / "obs-plugins",
-        resources_root / "data" / "obs-studio" / "plugins",
-        resources_root / "obs-plugins",
-    )
-    plugin_data_dir = next(
-        (
-            candidate
-            for candidate in preferred_data_dirs
-            if candidate.is_dir() and any((candidate / marker).exists() for marker in PLUGIN_DATA_MARKERS)
-        ),
-        None,
-    )
-    if plugin_data_dir is None:
-        plugin_data_dir = first_directory_with_markers(resources_root, PLUGIN_DATA_MARKERS)
-
     return {
         "obs_executable": str(obs_executable),
         "plugin_bin_dir": str(plugin_bin_dir),
-        "plugin_data_dir": str(plugin_data_dir),
     }
 
 

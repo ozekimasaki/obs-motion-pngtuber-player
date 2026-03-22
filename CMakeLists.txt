@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(MotionPngTuberPlayer VERSION 0.1.8 LANGUAGES C CXX)
+project(MotionPngTuberPlayer VERSION 0.1.9 LANGUAGES C CXX)
 
 add_library(${PROJECT_NAME} MODULE)
 
@@ -197,14 +197,19 @@ set_target_properties(${PROJECT_NAME} PROPERTIES PREFIX "")
 
 if(WIN32)
   set(MPT_PLUGIN_RUNTIME_DESTINATION "obs-plugins/64bit")
+  set(MPT_PLUGIN_DATA_DESTINATION "data/obs-plugins/${PROJECT_NAME}")
+elseif(APPLE)
+  set(MPT_PLUGIN_RUNTIME_DESTINATION "obs-plugins")
+  set(MPT_PLUGIN_DATA_DESTINATION "obs-plugins/${PROJECT_NAME}.plugin/Contents/Resources")
 else()
   set(MPT_PLUGIN_RUNTIME_DESTINATION "obs-plugins")
+  set(MPT_PLUGIN_DATA_DESTINATION "data/obs-plugins/${PROJECT_NAME}")
 endif()
 
 install(TARGETS ${PROJECT_NAME} LIBRARY DESTINATION ${MPT_PLUGIN_RUNTIME_DESTINATION} RUNTIME DESTINATION ${MPT_PLUGIN_RUNTIME_DESTINATION})
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/ DESTINATION data/obs-plugins/${PROJECT_NAME})
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python/runtime DESTINATION data/obs-plugins/${PROJECT_NAME}/python
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/ DESTINATION ${MPT_PLUGIN_DATA_DESTINATION})
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python/runtime DESTINATION ${MPT_PLUGIN_DATA_DESTINATION}/python
         PATTERN "__pycache__" EXCLUDE
         PATTERN "*.pyc" EXCLUDE)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/python/lipsync_core.py ${CMAKE_CURRENT_SOURCE_DIR}/python/realtime_emotion_audio.py
-        DESTINATION data/obs-plugins/${PROJECT_NAME}/python)
+        DESTINATION ${MPT_PLUGIN_DATA_DESTINATION}/python)

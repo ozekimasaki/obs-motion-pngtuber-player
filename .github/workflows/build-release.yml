@@ -282,6 +282,7 @@ jobs:
             Remove-Item -Path $artifactsDir -Recurse -Force
           }
 
+          New-Item -Path $portableRoot -ItemType Directory -Force | Out-Null
           Copy-Item -Path 'C:\Program Files\obs-studio\*' -Destination $portableRoot -Recurse
           New-Item -Path (Join-Path $portableRoot 'portable_mode.txt') -ItemType File -Force | Out-Null
           Copy-Item -Path (Join-Path $artifactRoot '*') -Destination $portableRoot -Recurse -Force
@@ -291,7 +292,15 @@ jobs:
           $pidFile = Join-Path $env:RUNNER_TEMP 'obs-smoke.pid'
 
           function Start-PortableObs {
-            $process = Start-Process -FilePath $obsExe -WorkingDirectory $obsWorkDir -PassThru
+            $process = Start-Process -FilePath $obsExe -WorkingDirectory $obsWorkDir -ArgumentList @(
+              '--disable-shutdown-check',
+              '--disable-missing-files-check',
+              '--multi',
+              '--websocket_port',
+              "${{ env.OBS_WEBSOCKET_PORT }}",
+              '--websocket_ipv4_only',
+              '--websocket_debug'
+            ) -PassThru
             Set-Content -Path $pidFile -Value $process.Id
             Start-Sleep -Seconds 15
           }
@@ -426,7 +435,10 @@ jobs:
             HOME="$SMOKE_HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" "${{ steps.obs_layout.outputs.obs_executable }}" \
               --disable-shutdown-check \
               --disable-missing-files-check \
-              --multi >"$OBS_STDOUT_LOG" 2>&1 &
+              --multi \
+              --websocket_port "${OBS_WEBSOCKET_PORT}" \
+              --websocket_ipv4_only \
+              --websocket_debug >"$OBS_STDOUT_LOG" 2>&1 &
             local obs_pid=$!
             echo "$obs_pid" > "$OBS_PID_FILE"
             sleep 20
@@ -545,9 +557,7 @@ jobs:
 
       - name: Install plugin into macOS OBS
         run: |
-          sudo cp -f smoke-package/obs-plugins/* "${{ steps.obs_layout.outputs.plugin_bin_dir }}/"
-          sudo mkdir -p "${{ steps.obs_layout.outputs.plugin_data_dir }}/MotionPngTuberPlayer"
-          sudo cp -a smoke-package/data/obs-plugins/MotionPngTuberPlayer/. "${{ steps.obs_layout.outputs.plugin_data_dir }}/MotionPngTuberPlayer/"
+          sudo cp -a smoke-package/obs-plugins/. "${{ steps.obs_layout.outputs.plugin_bin_dir }}/"
 
       - name: Prepare macOS smoke assets
         run: |
@@ -574,7 +584,10 @@ jobs:
             HOME="$SMOKE_HOME" "${{ steps.obs_layout.outputs.obs_executable }}" \
               --disable-shutdown-check \
               --disable-missing-files-check \
-              --multi >"$OBS_STDOUT_LOG" 2>&1 &
+              --multi \
+              --websocket_port "${OBS_WEBSOCKET_PORT}" \
+              --websocket_ipv4_only \
+              --websocket_debug >"$OBS_STDOUT_LOG" 2>&1 &
             local obs_pid=$!
             echo "$obs_pid" > "$OBS_PID_FILE"
             sleep 20
