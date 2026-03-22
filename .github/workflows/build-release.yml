@@ -443,6 +443,35 @@ jobs:
             sleep 1
           done
 
+          wait_for_obs_websocket() {
+            local obs_pid="$1"
+            for _ in $(seq 1 60); do
+              if ! kill -0 "$obs_pid" 2>/dev/null; then
+                echo "OBS exited before websocket was ready." >&2
+                if [[ -f "$OBS_STDOUT_LOG" ]]; then
+                  tail -n 200 "$OBS_STDOUT_LOG" >&2 || true
+                fi
+                if ls -1t "$OBS_CONFIG_ROOT/logs"/*.txt >/dev/null 2>&1; then
+                  tail -n 200 "$(ls -1t "$OBS_CONFIG_ROOT/logs"/*.txt | head -n 1)" >&2 || true
+                fi
+                return 1
+              fi
+              if "$PYTHON_BIN" -c 'import socket, sys; sock = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=1.0); sock.close()' "${OBS_WEBSOCKET_PORT}" >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 1
+            done
+
+            echo "Timed out waiting for OBS websocket on port ${OBS_WEBSOCKET_PORT}" >&2
+            if [[ -f "$OBS_STDOUT_LOG" ]]; then
+              tail -n 200 "$OBS_STDOUT_LOG" >&2 || true
+            fi
+            if ls -1t "$OBS_CONFIG_ROOT/logs"/*.txt >/dev/null 2>&1; then
+              tail -n 200 "$(ls -1t "$OBS_CONFIG_ROOT/logs"/*.txt | head -n 1)" >&2 || true
+            fi
+            return 1
+          }
+
           start_obs() {
             if ! kill -0 "$OPENBOX_PID" 2>/dev/null; then
               cat "$OPENBOX_LOG" >&2 || true
@@ -458,7 +487,7 @@ jobs:
               --websocket_debug >>"$OBS_STDOUT_LOG" 2>&1 &
             local obs_pid=$!
             echo "$obs_pid" > "$OBS_PID_FILE"
-            sleep 20
+            wait_for_obs_websocket "$obs_pid"
           }
 
           find_obs_window_ids() {
@@ -472,6 +501,8 @@ jobs:
             while read -r window_id; do
               if [[ -n "$window_id" ]]; then
                 xdotool windowactivate --sync "$window_id" 2>/dev/null || true
+                xdotool key --window "$window_id" --clearmodifiers ctrl+s 2>/dev/null || true
+                sleep 2
                 xdotool key --window "$window_id" --clearmodifiers ctrl+q 2>/dev/null || true
                 sleep 1
                 if kill -0 "$obs_pid" 2>/dev/null; then
@@ -510,6 +541,15 @@ jobs:
             done
 
             kill -KILL "$obs_pid" 2>/dev/null || true
+            for _ in $(seq 1 10); do
+              if ! kill -0 "$obs_pid" 2>/dev/null; then
+                return
+              fi
+              sleep 1
+            done
+
+            echo "OBS did not exit after SIGKILL: $obs_pid" >&2
+            return 1
           }
 
           cleanup() {
