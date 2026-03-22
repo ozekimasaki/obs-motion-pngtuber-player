@@ -47,6 +47,7 @@
   - `release-windows.ps1` で Windows package の build / tag / GitHub release 作成をローカル自動化
   - `.github\workflows\windows-ci.yml` で Windows CI build + package artifact upload を追加
   - 同 workflow に Linux stub build / package / release asset upload を追加
+  - tag push ベースの GitHub Actions release publish は `v0.1.2` で Windows + Linux asset 作成まで確認済み
   - 同 workflow に macOS stub build conduit (`workflow_dispatch`) を追加
   - 日本語向け `README.JA.MD` を追加し、README 導線も追加
 - macOS / Linux 互換化の下地
@@ -85,7 +86,7 @@ portable OBS 32.0.4 で次を確認済みです。
 ## 既知の制約
 
 - 実機検証は **Windows が中心**
-- Linux は stub build / package / release 導線を追加したが、実機 load / filter 検証は未完
+- Linux は stub build / package / release 導線を追加し、tag release 連携も確認済みだが、実機 load / filter 検証は未完
 - macOS は stub build 導線を追加したが、実機 build / load / release 検証は未完
 - `.npz` は直接パースではなく、**sibling JSON がある前提の互換対応**
 - 通常インストール版 OBS (`C:\Program Files\obs-studio`) へ配置する場合は管理者権限が必要
