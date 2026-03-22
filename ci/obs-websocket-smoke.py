@@ -242,15 +242,23 @@ def capture_screenshot(
 ) -> Image.Image:
     deadline = time.time() + timeout_seconds
     last_image: Image.Image | None = None
+    last_error: Exception | None = None
 
     while time.time() < deadline:
-        response = client.request(
-            "GetSourceScreenshot",
-            {
-                "sourceName": source_name,
-                "imageFormat": "png",
-            },
-        )
+        try:
+            response = client.request(
+                "GetSourceScreenshot",
+                {
+                    "sourceName": source_name,
+                    "imageFormat": "png",
+                },
+            )
+        except ObsRequestError as exc:
+            if exc.request_type == "GetSourceScreenshot" and exc.code == 702:
+                last_error = exc
+                time.sleep(1.0)
+                continue
+            raise
         image_data = response.get("imageData")
         if not isinstance(image_data, str) or not image_data:
             time.sleep(1.0)
@@ -268,6 +276,8 @@ def capture_screenshot(
     if last_image is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         last_image.save(output_path)
+    if last_error is not None:
+        raise RuntimeError(f"Did not receive a renderable screenshot for {source_name}: {last_error}")
     raise RuntimeError(f"Did not receive a nonblank screenshot for {source_name}")
 
 

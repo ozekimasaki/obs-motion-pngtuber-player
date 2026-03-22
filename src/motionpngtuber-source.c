@@ -37,6 +37,8 @@
 #define PROP_VALID_POLICY "valid_policy"
 #define FRAME_BUFFER_RESIZE_ERROR "Failed to resize video frame buffer."
 
+extern obs_data_t *obs_source_get_settings(const obs_source_t *source);
+
 struct motionpngtuber_source {
 	obs_source_t *source;
 	os_event_t *stop_signal;
@@ -259,6 +261,22 @@ static void apply_runtime_defaults(struct motionpngtuber_source *context)
 		context->render_fps = 30;
 }
 
+static void write_canonical_settings(obs_data_t *settings, const char *loop_video, const char *mouth_dir,
+				       const char *track_file, const char *track_calibrated_file,
+				       long long render_fps, long long audio_device_index,
+				       const char *audio_device_identity, const char *valid_policy)
+{
+	obs_data_set_string(settings, PROP_LOOP_VIDEO, loop_video ? loop_video : "");
+	obs_data_set_string(settings, PROP_MOUTH_DIR, mouth_dir ? mouth_dir : "");
+	obs_data_set_string(settings, PROP_TRACK_FILE, track_file ? track_file : "");
+	obs_data_set_string(settings, PROP_TRACK_CALIBRATED_FILE,
+			    track_calibrated_file ? track_calibrated_file : "");
+	obs_data_set_int(settings, PROP_RENDER_FPS, render_fps > 0 ? render_fps : 30);
+	obs_data_set_int(settings, PROP_AUDIO_DEVICE_INDEX, audio_device_index);
+	obs_data_set_string(settings, PROP_AUDIO_DEVICE_IDENTITY, audio_device_identity ? audio_device_identity : "");
+	obs_data_set_string(settings, PROP_VALID_POLICY, has_text(valid_policy) ? valid_policy : "hold");
+}
+
 static void motionpngtuber_rebuild_runtime_locked(struct motionpngtuber_source *context)
 {
 	if (!context->runtime_dirty)
@@ -464,14 +482,22 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 		context->runtime_dirty = true;
 	pthread_mutex_unlock(&context->mutex);
 
-	obs_data_set_string(settings, PROP_LOOP_VIDEO, saved_loop_video);
-	obs_data_set_string(settings, PROP_MOUTH_DIR, saved_mouth_dir);
-	obs_data_set_string(settings, PROP_TRACK_FILE, saved_track_file);
-	obs_data_set_string(settings, PROP_TRACK_CALIBRATED_FILE, saved_track_calibrated_file);
-	obs_data_set_int(settings, PROP_RENDER_FPS, saved_render_fps);
-	obs_data_set_int(settings, PROP_AUDIO_DEVICE_INDEX, saved_audio_device_index);
-	obs_data_set_string(settings, PROP_AUDIO_DEVICE_IDENTITY, saved_audio_device_identity);
-	obs_data_set_string(settings, PROP_VALID_POLICY, saved_valid_policy);
+	write_canonical_settings(settings, saved_loop_video, saved_mouth_dir, saved_track_file,
+				 saved_track_calibrated_file, saved_render_fps, saved_audio_device_index,
+				 saved_audio_device_identity, saved_valid_policy);
+	if (context->source) {
+		/* obs_source_get_settings() returns source->context.settings with an extra ref. */
+		obs_data_t *source_settings = obs_source_get_settings(context->source);
+		if (source_settings) {
+			if (source_settings != settings) {
+				write_canonical_settings(source_settings, saved_loop_video, saved_mouth_dir,
+							 saved_track_file, saved_track_calibrated_file,
+							 saved_render_fps, saved_audio_device_index,
+							 saved_audio_device_identity, saved_valid_policy);
+			}
+			obs_data_release(source_settings);
+		}
+	}
 
 	bfree(saved_loop_video);
 	bfree(saved_mouth_dir);
@@ -488,17 +514,9 @@ static void motionpngtuber_save(void *data, obs_data_t *settings)
 		return;
 
 	pthread_mutex_lock(&context->mutex);
-	obs_data_set_string(settings, PROP_LOOP_VIDEO, context->loop_video ? context->loop_video : "");
-	obs_data_set_string(settings, PROP_MOUTH_DIR, context->mouth_dir ? context->mouth_dir : "");
-	obs_data_set_string(settings, PROP_TRACK_FILE, context->track_file ? context->track_file : "");
-	obs_data_set_string(settings, PROP_TRACK_CALIBRATED_FILE,
-			    context->track_calibrated_file ? context->track_calibrated_file : "");
-	obs_data_set_int(settings, PROP_RENDER_FPS, context->render_fps > 0 ? context->render_fps : 30);
-	obs_data_set_int(settings, PROP_AUDIO_DEVICE_INDEX, context->audio_device_index);
-	obs_data_set_string(settings, PROP_AUDIO_DEVICE_IDENTITY,
-			    context->audio_device_identity_json ? context->audio_device_identity_json : "");
-	obs_data_set_string(settings, PROP_VALID_POLICY,
-			    (context->valid_policy && *context->valid_policy) ? context->valid_policy : "hold");
+	write_canonical_settings(settings, context->loop_video, context->mouth_dir, context->track_file,
+				 context->track_calibrated_file, context->render_fps, context->audio_device_index,
+				 context->audio_device_identity_json, context->valid_policy);
 	pthread_mutex_unlock(&context->mutex);
 }
 
