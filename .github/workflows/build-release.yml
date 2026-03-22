@@ -476,8 +476,6 @@ jobs:
 
           trap cleanup EXIT
 
-          start_obs
-          stop_obs
           "$PYTHON_BIN" ./ci/configure-obs-websocket.py --config-root "$OBS_CONFIG_ROOT" --port "$OBS_WEBSOCKET_PORT"
 
           start_obs

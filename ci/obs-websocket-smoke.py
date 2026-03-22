@@ -319,7 +319,7 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         ).get("propertyItems", [])
         assert_true(bool(property_items), "audio device list should contain at least one entry")
 
-        before_filter = capture_screenshot(client, args.source_name, artifacts_dir / "before-filter.png")
+        before_filter = capture_screenshot(client, args.scene_name, artifacts_dir / "before-filter.png")
         before_filter_extent = get_nonblank_extent(before_filter)
         assert_true(before_filter_extent is not None, "before-filter screenshot should contain visible content")
         client.request(
@@ -339,10 +339,10 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         assert_equal(int(filter_settings.get("top", 0)), crop.top, "crop_filter top")
         assert_equal(int(filter_settings.get("bottom", 0)), crop.bottom, "crop_filter bottom")
 
-        after_filter = capture_screenshot(client, args.source_name, artifacts_dir / "after-filter.png")
+        after_filter = capture_screenshot(client, args.scene_name, artifacts_dir / "after-filter.png")
         after_filter_extent = get_nonblank_extent(after_filter)
         assert_true(after_filter_extent is not None, "after-filter screenshot should contain visible content")
-        # OBS 30 source screenshots can keep the original canvas size even when crop_filter trims the visible output.
+        # OBS 30 source screenshots can keep the original canvas size, so compare the rendered scene output instead.
         assert_true(
             (
                 after_filter.width < before_filter.width and after_filter.height < before_filter.height
