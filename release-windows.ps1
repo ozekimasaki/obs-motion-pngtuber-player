@@ -63,7 +63,7 @@ if ($LASTEXITCODE -ne 0) {
 git push origin $Tag
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$releaseNotes = 'Windows x64 package release. Linux and macOS stub-build release assets are published by GitHub Actions on tag pushes.'
+$releaseNotes = 'Windows x64 package release.'
 $assetZip = "$zipPath#MotionPngTuberPlayer Windows x64 package"
 $assetHash = "$hashPath#SHA256 checksum"
 

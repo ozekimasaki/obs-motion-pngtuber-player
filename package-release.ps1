@@ -2,8 +2,8 @@ param(
     [ValidateSet("Release", "Debug", "RelWithDebInfo", "MinSizeRel")]
     [string]$Configuration = "Release",
     [string]$BuildDir = "",
-    [ValidateSet("windows", "linux", "macos")]
-    [string]$Platform = "",
+    [ValidateSet("windows")]
+    [string]$Platform = "windows",
     [string]$PackageName = "",
     [string]$OutputDir = "",
     [switch]$NoZip
@@ -12,13 +12,17 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function Test-IsWindows {
+    return $env:OS -eq 'Windows_NT'
+}
+
 function Get-CMakePath {
     $cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
     if ($cmakeCommand) {
         return $cmakeCommand.Source
     }
 
-    if (-not $IsWindows) {
+    if (-not (Test-IsWindows)) {
         throw 'cmake was not found in PATH.'
     }
 
@@ -39,24 +43,12 @@ function Get-CMakePath {
 
 $pluginRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-if ([string]::IsNullOrWhiteSpace($Platform)) {
-    if ($IsWindows) {
-        $Platform = 'windows'
-    } elseif ($IsLinux) {
-        $Platform = 'linux'
-    } elseif ($IsMacOS) {
-        $Platform = 'macos'
-    } else {
-        throw 'Could not infer package platform.'
-    }
+if (-not (Test-IsWindows)) {
+    throw 'package-release.ps1 currently supports Windows packaging only.'
 }
 
 if ([string]::IsNullOrWhiteSpace($BuildDir)) {
-    switch ($Platform) {
-        'windows' { $BuildDir = 'build-win-fallback-vs' }
-        'linux' { $BuildDir = 'build-linux' }
-        'macos' { $BuildDir = 'build-macos' }
-    }
+    $BuildDir = 'build-win-fallback-vs'
 }
 
 $buildRoot = Join-Path $pluginRoot $BuildDir
@@ -65,7 +57,7 @@ if (-not (Test-Path $buildRoot)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($PackageName)) {
-    $PackageName = "MotionPngTuberPlayer-$Platform"
+    $PackageName = 'MotionPngTuberPlayer-obs-plugin-windows-x64'
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {

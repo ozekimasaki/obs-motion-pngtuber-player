@@ -11,8 +11,6 @@ on:
 
 env:
   WINDOWS_PACKAGE_NAME: MotionPngTuberPlayer-obs-plugin-windows-x64
-  LINUX_PACKAGE_NAME: MotionPngTuberPlayer-obs-plugin-linux-x64
-  MACOS_PACKAGE_NAME: MotionPngTuberPlayer-obs-plugin-macos-arm64
   CHECKSUMS_NAME: MotionPngTuberPlayer-release-checksums.txt
   OBS_WEBSOCKET_PORT: "4457"
   SMOKE_SCENE_NAME: MotionPngTuberPlayer Smoke Scene
@@ -69,116 +67,6 @@ jobs:
         with:
           name: ${{ env.WINDOWS_PACKAGE_NAME }}
           path: dist/${{ env.WINDOWS_PACKAGE_NAME }}
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-
-  build-linux:
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build pkg-config libobs-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libpng-dev portaudio19-dev
-          pkg-config --modversion libobs
-          pkg-config --modversion libavcodec
-          pkg-config --modversion libpng
-          pkg-config --modversion portaudio-2.0
-
-      - name: Configure and build Linux plugin
-        run: bash ./ci/build-nonwindows.sh build-linux
-
-      - name: Package Linux layout
-        shell: pwsh
-        run: .\package-release.ps1 -Configuration Release -BuildDir build-linux -Platform linux -PackageName "${{ env.LINUX_PACKAGE_NAME }}" -NoZip
-
-      - name: Upload Linux package
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ env.LINUX_PACKAGE_NAME }}
-          path: dist/${{ env.LINUX_PACKAGE_NAME }}
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-
-  build-macos:
-    runs-on: macos-14
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Install macOS build tools
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: "1"
-        run: |
-          for formula in cmake ninja pkgconf ffmpeg libpng portaudio; do
-            if brew list --formula "${formula}" >/dev/null 2>&1; then
-              echo "${formula} is already installed."
-            else
-              brew install "${formula}"
-            fi
-          done
-
-          if brew list --cask obs >/dev/null 2>&1; then
-            echo "obs is already installed."
-          else
-            brew install --cask obs
-          fi
-
-      - name: Detect macOS libobs framework
-        id: macos_obs
-        run: |
-          obs_app_root="/Applications/OBS.app"
-          if [[ ! -d "${obs_app_root}" ]]; then
-            echo "::error::OBS.app was not found at ${obs_app_root} after installation."
-            exit 1
-          fi
-
-          library_path=""
-          for candidate in \
-            "${obs_app_root}/Contents/Frameworks/libobs.framework/libobs" \
-            "${obs_app_root}/Contents/Frameworks/libobs.framework/Versions/A/libobs" \
-            "${obs_app_root}/Contents/Frameworks/libobs.0.dylib"; do
-            if [[ -f "${candidate}" ]]; then
-              library_path="${candidate}"
-              break
-            fi
-          done
-
-          if [[ -z "${library_path}" ]]; then
-            echo "::error::Could not locate the libobs framework binary inside OBS.app."
-            find "${obs_app_root}/Contents/Frameworks" -maxdepth 3 \( -name libobs -o -name 'libobs*.dylib' \) -print || true
-            exit 1
-          fi
-
-          echo "library_path=${library_path}" >> "$GITHUB_OUTPUT"
-          echo "Using macOS libobs at ${library_path}"
-
-      - name: Configure and build macOS plugin
-        env:
-          MPT_MACOS_OBS_LIBRARY: ${{ steps.macos_obs.outputs.library_path }}
-        run: bash ./ci/build-nonwindows.sh build-macos
-
-      - name: Package macOS layout
-        shell: pwsh
-        run: ./package-release.ps1 -Configuration Release -BuildDir build-macos -Platform macos -PackageName "${{ env.MACOS_PACKAGE_NAME }}" -NoZip
-
-      - name: Upload macOS package
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ env.MACOS_PACKAGE_NAME }}
-          path: dist/${{ env.MACOS_PACKAGE_NAME }}
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
@@ -271,9 +159,9 @@ jobs:
           $python = "$env:RUNNER_TEMP\mpt-smoke-venv\Scripts\python.exe"
           $portableRoot = Join-Path $env:RUNNER_TEMP 'obs-portable-smoke'
           $portableObsConfig = Join-Path $portableRoot 'config\obs-studio'
-          $portableLogs = Join-Path $portableRoot 'config\obs-studio\logs'
           $artifactRoot = Join-Path $PWD 'smoke-package'
           $artifactsDir = Join-Path $env:RUNNER_TEMP 'mpt-smoke-artifacts'
+          $pidFile = Join-Path $env:RUNNER_TEMP 'obs-smoke.pid'
 
           if (Test-Path $portableRoot) {
             Remove-Item -Path $portableRoot -Recurse -Force
@@ -289,7 +177,6 @@ jobs:
 
           $obsExe = Join-Path $portableRoot 'bin\64bit\obs64.exe'
           $obsWorkDir = Join-Path $portableRoot 'bin\64bit'
-          $pidFile = Join-Path $env:RUNNER_TEMP 'obs-smoke.pid'
 
           function Start-PortableObs {
             $process = Start-Process -FilePath $obsExe -WorkingDirectory $obsWorkDir -ArgumentList @(
@@ -372,482 +259,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  smoke-linux:
-    needs:
-      - build-linux
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Install Linux OBS smoke dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y obs-studio ffmpeg libportaudio2 python3-venv xvfb xdotool openbox
-
-      - name: Download Linux package
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ env.LINUX_PACKAGE_NAME }}
-          path: smoke-package
-
-      - name: Detect Linux OBS layout
-        id: obs_layout
-        run: |
-          python3 ./ci/detect-obs-layout.py --platform linux --github-output "$GITHUB_OUTPUT"
-
-      - name: Install plugin into Linux OBS
-        run: |
-          sudo cp -f smoke-package/obs-plugins/* "${{ steps.obs_layout.outputs.plugin_bin_dir }}/"
-          sudo mkdir -p "${{ steps.obs_layout.outputs.plugin_data_dir }}/MotionPngTuberPlayer"
-          sudo cp -a smoke-package/data/obs-plugins/MotionPngTuberPlayer/. "${{ steps.obs_layout.outputs.plugin_data_dir }}/MotionPngTuberPlayer/"
-
-      - name: Prepare Linux smoke assets
-        run: |
-          python3 -m venv "$RUNNER_TEMP/mpt-smoke-venv"
-          "$RUNNER_TEMP/mpt-smoke-venv/bin/python" -m pip install --upgrade pip websocket-client pillow
-          "$RUNNER_TEMP/mpt-smoke-venv/bin/python" ./ci/generate-smoke-assets.py --output-dir "$RUNNER_TEMP/mpt-smoke-assets" --ffmpeg ffmpeg
-
-      - name: Prime and run Linux OBS smoke tests
-        run: |
-          set -euo pipefail
-
-          export SMOKE_HOME="$RUNNER_TEMP/obs-smoke-home"
-          export XDG_CONFIG_HOME="$SMOKE_HOME/.config"
-          export OBS_CONFIG_ROOT="$XDG_CONFIG_HOME/obs-studio"
-          export OBS_RESULTS="$RUNNER_TEMP/mpt-smoke-artifacts"
-          export OBS_STDOUT_LOG="$RUNNER_TEMP/obs-linux.stdout.log"
-          export OPENBOX_LOG="$RUNNER_TEMP/openbox.log"
-          export OBS_PID_FILE="$RUNNER_TEMP/obs-linux.pid"
-          export PYTHON_BIN="$RUNNER_TEMP/mpt-smoke-venv/bin/python"
-          export OBS_URL="ws://127.0.0.1:${OBS_WEBSOCKET_PORT}"
-          export DISPLAY=:99
-
-          rm -rf "$SMOKE_HOME" "$OBS_RESULTS"
-          mkdir -p "$OBS_CONFIG_ROOT"
-
-          Xvfb :99 -screen 0 1920x1080x24 >"$RUNNER_TEMP/xvfb.log" 2>&1 &
-          XVFB_PID=$!
-          sleep 2
-          HOME="$SMOKE_HOME" openbox --sm-disable >"$OPENBOX_LOG" 2>&1 &
-          OPENBOX_PID=$!
-          for _ in $(seq 1 5); do
-            if ! kill -0 "$OPENBOX_PID" 2>/dev/null; then
-              cat "$OPENBOX_LOG" >&2 || true
-              exit 1
-            fi
-            sleep 1
-          done
-
-          wait_for_obs_websocket() {
-            local obs_pid="$1"
-            for _ in $(seq 1 60); do
-              if ! kill -0 "$obs_pid" 2>/dev/null; then
-                echo "OBS exited before websocket was ready." >&2
-                if [[ -f "$OBS_STDOUT_LOG" ]]; then
-                  tail -n 200 "$OBS_STDOUT_LOG" >&2 || true
-                fi
-                if ls -1t "$OBS_CONFIG_ROOT/logs"/*.txt >/dev/null 2>&1; then
-                  tail -n 200 "$(ls -1t "$OBS_CONFIG_ROOT/logs"/*.txt | head -n 1)" >&2 || true
-                fi
-                return 1
-              fi
-              if "$PYTHON_BIN" -c 'import socket, sys; sock = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=1.0); sock.close()' "${OBS_WEBSOCKET_PORT}" >/dev/null 2>&1; then
-                return 0
-              fi
-              sleep 1
-            done
-
-            echo "Timed out waiting for OBS websocket on port ${OBS_WEBSOCKET_PORT}" >&2
-            if [[ -f "$OBS_STDOUT_LOG" ]]; then
-              tail -n 200 "$OBS_STDOUT_LOG" >&2 || true
-            fi
-            if ls -1t "$OBS_CONFIG_ROOT/logs"/*.txt >/dev/null 2>&1; then
-              tail -n 200 "$(ls -1t "$OBS_CONFIG_ROOT/logs"/*.txt | head -n 1)" >&2 || true
-            fi
-            return 1
-          }
-
-          start_obs() {
-            if ! kill -0 "$OPENBOX_PID" 2>/dev/null; then
-              cat "$OPENBOX_LOG" >&2 || true
-              return 1
-            fi
-            printf '\n=== start_obs %s ===\n' "$(date -Iseconds)" >>"$OBS_STDOUT_LOG"
-            HOME="$SMOKE_HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" "${{ steps.obs_layout.outputs.obs_executable }}" \
-              --disable-shutdown-check \
-              --disable-missing-files-check \
-              --multi \
-              --websocket_port "${OBS_WEBSOCKET_PORT}" \
-              --websocket_ipv4_only \
-              --websocket_debug >>"$OBS_STDOUT_LOG" 2>&1 &
-            local obs_pid=$!
-            echo "$obs_pid" > "$OBS_PID_FILE"
-            wait_for_obs_websocket "$obs_pid"
-          }
-
-          find_obs_window_ids() {
-            xdotool search --onlyvisible --class obs 2>/dev/null || \
-              xdotool search --onlyvisible --name OBS 2>/dev/null || \
-              xdotool search --onlyvisible --pid "$1" 2>/dev/null || true
-          }
-
-          request_quit_obs() {
-            local obs_pid="$1"
-            while read -r window_id; do
-              if [[ -n "$window_id" ]]; then
-                xdotool windowactivate --sync "$window_id" 2>/dev/null || true
-                xdotool key --window "$window_id" --clearmodifiers ctrl+s 2>/dev/null || true
-                sleep 2
-                xdotool key --window "$window_id" --clearmodifiers ctrl+q 2>/dev/null || true
-              fi
-            done < <(find_obs_window_ids "$obs_pid")
-          }
-
-          stop_obs() {
-            if [[ ! -f "$OBS_PID_FILE" ]]; then
-              return
-            fi
-
-            local obs_pid
-            obs_pid="$(cat "$OBS_PID_FILE")"
-            if ! kill -0 "$obs_pid" 2>/dev/null; then
-              return
-            fi
-
-            request_quit_obs "$obs_pid"
-            for _ in $(seq 1 30); do
-              if ! kill -0 "$obs_pid" 2>/dev/null; then
-                return
-              fi
-              sleep 1
-            done
-
-            kill -TERM "$obs_pid" 2>/dev/null || true
-            for _ in $(seq 1 20); do
-              if ! kill -0 "$obs_pid" 2>/dev/null; then
-                return
-              fi
-              sleep 1
-            done
-
-            kill -KILL "$obs_pid" 2>/dev/null || true
-            for _ in $(seq 1 10); do
-              if ! kill -0 "$obs_pid" 2>/dev/null; then
-                return
-              fi
-              sleep 1
-            done
-
-            echo "OBS did not exit after SIGKILL: $obs_pid" >&2
-            return 1
-          }
-
-          cleanup() {
-            stop_obs || true
-            if [[ -n "${OPENBOX_PID:-}" ]] && kill -0 "$OPENBOX_PID" 2>/dev/null; then
-              kill -TERM "$OPENBOX_PID" 2>/dev/null || true
-            fi
-            if [[ -n "${XVFB_PID:-}" ]] && kill -0 "$XVFB_PID" 2>/dev/null; then
-              kill -TERM "$XVFB_PID" 2>/dev/null || true
-            fi
-          }
-
-          trap cleanup EXIT
-
-          "$PYTHON_BIN" ./ci/configure-obs-websocket.py \
-            --config-root "$OBS_CONFIG_ROOT" \
-            --port "$OBS_WEBSOCKET_PORT"
-
-          start_obs
-          "$PYTHON_BIN" ./ci/obs-websocket-smoke.py \
-            --phase create \
-            --url "$OBS_URL" \
-            --scene-name "$SMOKE_SCENE_NAME" \
-            --source-name "$SMOKE_SOURCE_NAME" \
-            --filter-name "$SMOKE_FILTER_NAME" \
-            --asset-dir "$RUNNER_TEMP/mpt-smoke-assets" \
-            --artifacts-dir "$OBS_RESULTS"
-          stop_obs
-          if [[ -d "$OBS_CONFIG_ROOT/basic" ]]; then
-            grep -R '"render_fps"' "$OBS_CONFIG_ROOT/basic" || true
-          fi
-
-          start_obs
-          "$PYTHON_BIN" ./ci/obs-websocket-smoke.py \
-            --phase reopen \
-            --url "$OBS_URL" \
-            --scene-name "$SMOKE_SCENE_NAME" \
-            --source-name "$SMOKE_SOURCE_NAME" \
-            --filter-name "$SMOKE_FILTER_NAME" \
-            --asset-dir "$RUNNER_TEMP/mpt-smoke-assets" \
-            --artifacts-dir "$OBS_RESULTS"
-
-      - name: Upload Linux smoke artifacts
-        if: failure()
-        uses: actions/upload-artifact@v6
-        with:
-          name: linux-smoke-artifacts
-          path: |
-            ${{ runner.temp }}/mpt-smoke-artifacts
-            ${{ runner.temp }}/obs-smoke-home/.config/obs-studio/global.ini
-            ${{ runner.temp }}/obs-linux.stdout.log
-            ${{ runner.temp }}/obs-smoke-home/.config/obs-studio/plugin_config/obs-websocket
-            ${{ runner.temp }}/obs-smoke-home/.config/obs-studio/basic
-            ${{ runner.temp }}/xvfb.log
-            ${{ runner.temp }}/openbox.log
-            ${{ runner.temp }}/obs-smoke-home/.config/obs-studio/logs
-          if-no-files-found: warn
-          retention-days: 14
-
-  smoke-macos:
-    needs:
-      - build-macos
-    runs-on: macos-14
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Install macOS OBS smoke dependencies
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: "1"
-        run: |
-          for formula in ffmpeg libpng portaudio; do
-            if brew list --formula "$formula" >/dev/null 2>&1; then
-              echo "$formula is already installed."
-            else
-              brew install "$formula"
-            fi
-          done
-
-          if brew list --cask obs >/dev/null 2>&1; then
-            echo "obs is already installed."
-          else
-            brew install --cask obs
-          fi
-
-      - name: Download macOS package
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ env.MACOS_PACKAGE_NAME }}
-          path: smoke-package
-
-      - name: Detect macOS OBS layout
-        id: obs_layout
-        run: |
-          python3 ./ci/detect-obs-layout.py --platform macos --github-output "$GITHUB_OUTPUT"
-
-      - name: Install plugin into macOS OBS
-        run: |
-          sudo cp -a smoke-package/obs-plugins/. "${{ steps.obs_layout.outputs.plugin_bin_dir }}/"
-
-      - name: Prepare macOS smoke assets
-        run: |
-          python3 -m venv "$RUNNER_TEMP/mpt-smoke-venv"
-          "$RUNNER_TEMP/mpt-smoke-venv/bin/python" -m pip install --upgrade pip websocket-client pillow
-          "$RUNNER_TEMP/mpt-smoke-venv/bin/python" ./ci/generate-smoke-assets.py --output-dir "$RUNNER_TEMP/mpt-smoke-assets" --ffmpeg ffmpeg
-
-      - name: Prime and run macOS OBS smoke tests
-        run: |
-          set -euo pipefail
-
-          export OBS_CONFIG_ROOT="$HOME/Library/Application Support/obs-studio"
-          export OBS_CONFIG_BACKUP="$RUNNER_TEMP/obs-macos-config-backup"
-          export OBS_TEST_CONFIG_MARKER="$RUNNER_TEMP/obs-macos-test-config.marker"
-          export OBS_RESULTS="$RUNNER_TEMP/mpt-smoke-artifacts"
-          export OBS_STDOUT_LOG="$RUNNER_TEMP/obs-macos.stdout.log"
-          export OBS_PID_FILE="$RUNNER_TEMP/obs-macos.pid"
-          export PYTHON_BIN="$RUNNER_TEMP/mpt-smoke-venv/bin/python"
-          export OBS_URL="ws://127.0.0.1:${OBS_WEBSOCKET_PORT}"
-          export MPT_CI_KEEP_RENDERING=1
-
-          rm -rf "$OBS_RESULTS" "$OBS_CONFIG_BACKUP"
-          rm -f "$OBS_TEST_CONFIG_MARKER"
-          if [[ -d "$OBS_CONFIG_ROOT" ]]; then
-            mv "$OBS_CONFIG_ROOT" "$OBS_CONFIG_BACKUP"
-          fi
-          mkdir -p "$OBS_CONFIG_ROOT"
-          : >"$OBS_TEST_CONFIG_MARKER"
-
-          start_obs() {
-            local before_pids
-            local after_pids
-            local obs_pid=""
-
-            rm -f "$OBS_PID_FILE"
-            before_pids="$(mktemp)"
-            after_pids="$(mktemp)"
-            pgrep -x OBS | sort -u >"$before_pids" || true
-            open -na /Applications/OBS.app --args \
-              --disable-shutdown-check \
-              --disable-missing-files-check \
-              --multi \
-              --websocket_port "${OBS_WEBSOCKET_PORT}" \
-              --websocket_ipv4_only \
-              --websocket_debug >/dev/null 2>&1
-
-            for _ in $(seq 1 60); do
-              pgrep -x OBS | sort -u >"$after_pids" || true
-              obs_pid="$(comm -13 "$before_pids" "$after_pids" | tail -n 1)"
-              if [[ -z "$obs_pid" ]]; then
-                obs_pid="$(tail -n 1 "$after_pids" || true)"
-              fi
-              if [[ -n "$obs_pid" ]] && kill -0 "$obs_pid" 2>/dev/null && \
-                lsof -nP -a -p "$obs_pid" -iTCP:"${OBS_WEBSOCKET_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
-                echo "$obs_pid" > "$OBS_PID_FILE"
-                rm -f "$before_pids" "$after_pids"
-                sleep 5
-                return 0
-              fi
-              sleep 1
-            done
-
-            echo "Timed out waiting for OBS websocket on port ${OBS_WEBSOCKET_PORT}" >&2
-            pgrep -x OBS || true
-            lsof -nP -iTCP:"${OBS_WEBSOCKET_PORT}" || true
-            if ls -1t "$OBS_CONFIG_ROOT/logs"/*.txt >/dev/null 2>&1; then
-              tail -n 200 "$(ls -1t "$OBS_CONFIG_ROOT/logs"/*.txt | head -n 1)" || true
-            fi
-            rm -f "$before_pids" "$after_pids"
-            return 1
-          }
-
-          request_quit_obs() {
-            osascript \
-              -e 'tell application id "com.obsproject.obs-studio" to activate' \
-              -e 'tell application id "com.obsproject.obs-studio" to quit' >/dev/null 2>&1 || true
-          }
-
-          stop_obs() {
-            if [[ ! -f "$OBS_PID_FILE" ]]; then
-              return
-            fi
-
-            local obs_pid
-            obs_pid="$(cat "$OBS_PID_FILE")"
-            if ! kill -0 "$obs_pid" 2>/dev/null; then
-              return
-            fi
-
-            request_quit_obs
-            for _ in $(seq 1 30); do
-              if ! kill -0 "$obs_pid" 2>/dev/null; then
-                return
-              fi
-              sleep 1
-            done
-
-            kill -TERM "$obs_pid" 2>/dev/null || true
-            for _ in $(seq 1 10); do
-              if ! kill -0 "$obs_pid" 2>/dev/null; then
-                return
-              fi
-              sleep 1
-            done
-
-            kill -KILL "$obs_pid" 2>/dev/null || true
-            for _ in $(seq 1 10); do
-              if ! kill -0 "$obs_pid" 2>/dev/null; then
-                return
-              fi
-              sleep 1
-            done
-          }
-
-          trap 'stop_obs || true' EXIT
-
-          "$PYTHON_BIN" ./ci/configure-obs-websocket.py \
-            --config-root "$OBS_CONFIG_ROOT" \
-            --port "$OBS_WEBSOCKET_PORT" \
-            --set-macos-permissions-dialog-shown \
-            --mark-first-run-complete
-
-          start_obs
-          "$PYTHON_BIN" ./ci/obs-websocket-smoke.py \
-            --phase create \
-            --url "$OBS_URL" \
-            --scene-name "$SMOKE_SCENE_NAME" \
-            --source-name "$SMOKE_SOURCE_NAME" \
-            --filter-name "$SMOKE_FILTER_NAME" \
-            --asset-dir "$RUNNER_TEMP/mpt-smoke-assets" \
-            --artifacts-dir "$OBS_RESULTS"
-          stop_obs
-
-          start_obs
-          "$PYTHON_BIN" ./ci/obs-websocket-smoke.py \
-            --phase reopen \
-            --url "$OBS_URL" \
-            --scene-name "$SMOKE_SCENE_NAME" \
-            --source-name "$SMOKE_SOURCE_NAME" \
-            --filter-name "$SMOKE_FILTER_NAME" \
-            --asset-dir "$RUNNER_TEMP/mpt-smoke-assets" \
-            --artifacts-dir "$OBS_RESULTS"
-
-      - name: Collect macOS smoke artifacts
-        if: failure()
-        run: |
-          set -euo pipefail
-
-          archive_root="${{ runner.temp }}/macos-smoke-debug"
-          rm -rf "$archive_root"
-          mkdir -p "$archive_root"
-
-          if [[ -d "$HOME/Library/Application Support/obs-studio" ]]; then
-            mkdir -p "$archive_root/obs-studio"
-            cp -a "$HOME/Library/Application Support/obs-studio/." "$archive_root/obs-studio/"
-          fi
-
-          if [[ -d "$HOME/Library/Logs" ]]; then
-            mkdir -p "$archive_root/Library Logs"
-            cp -a "$HOME/Library/Logs/." "$archive_root/Library Logs/" || true
-          fi
-
-      - name: Upload macOS smoke artifacts
-        if: failure()
-        uses: actions/upload-artifact@v6
-        with:
-          name: macos-smoke-artifacts
-          path: |
-            ${{ runner.temp }}/mpt-smoke-artifacts
-            ${{ runner.temp }}/macos-smoke-debug
-            ${{ runner.temp }}/obs-macos.stdout.log
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Restore macOS OBS config
-        if: always()
-        run: |
-          set -euo pipefail
-
-          config_root="$HOME/Library/Application Support/obs-studio"
-          backup_root="${{ runner.temp }}/obs-macos-config-backup"
-          marker_path="${{ runner.temp }}/obs-macos-test-config.marker"
-
-          if [[ -d "$backup_root" ]]; then
-            rm -rf "$config_root"
-            mv "$backup_root" "$config_root"
-          elif [[ -f "$marker_path" ]]; then
-            rm -rf "$config_root"
-          fi
-          rm -f "$marker_path"
-
   publish-release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs:
       - build-windows
-      - build-linux
-      - build-macos
       - smoke-windows
-      - smoke-linux
-      - smoke-macos
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -856,12 +272,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Download packaged artifacts
+      - name: Download packaged artifact
         uses: actions/download-artifact@v8
         with:
-          path: release-artifacts
+          name: ${{ env.WINDOWS_PACKAGE_NAME }}
+          path: release-artifacts/${{ env.WINDOWS_PACKAGE_NAME }}
 
-      - name: Create release archives
+      - name: Create release archive
         run: |
           sudo apt-get update
           sudo apt-get install -y zip
@@ -870,36 +287,21 @@ jobs:
             cd "release-artifacts/${WINDOWS_PACKAGE_NAME}"
             zip -rq "../../release/${WINDOWS_PACKAGE_NAME}.zip" .
           )
-          (
-            cd "release-artifacts/${LINUX_PACKAGE_NAME}"
-            zip -rq "../../release/${LINUX_PACKAGE_NAME}.zip" .
-          )
-          (
-            cd "release-artifacts/${MACOS_PACKAGE_NAME}"
-            zip -rq "../../release/${MACOS_PACKAGE_NAME}.zip" .
-          )
-          sha256sum \
-            "release/${WINDOWS_PACKAGE_NAME}.zip" \
-            "release/${LINUX_PACKAGE_NAME}.zip" \
-            "release/${MACOS_PACKAGE_NAME}.zip" > "release/${CHECKSUMS_NAME}"
+          sha256sum "release/${WINDOWS_PACKAGE_NAME}.zip" > "release/${CHECKSUMS_NAME}"
 
       - name: Publish GitHub release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes='Windows, Linux, and macOS packages are built and OBS smoke-tested in GitHub Actions before release publication.'
+          notes='Windows package is built and OBS smoke-tested in GitHub Actions before release publication.'
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
               "release/${WINDOWS_PACKAGE_NAME}.zip#MotionPngTuberPlayer Windows x64 package" \
-              "release/${LINUX_PACKAGE_NAME}.zip#MotionPngTuberPlayer Linux x64 package" \
-              "release/${MACOS_PACKAGE_NAME}.zip#MotionPngTuberPlayer macOS arm64 package" \
               "release/${CHECKSUMS_NAME}#SHA256 checksums" \
               --clobber
           else
             gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
               "release/${WINDOWS_PACKAGE_NAME}.zip#MotionPngTuberPlayer Windows x64 package" \
-              "release/${LINUX_PACKAGE_NAME}.zip#MotionPngTuberPlayer Linux x64 package" \
-              "release/${MACOS_PACKAGE_NAME}.zip#MotionPngTuberPlayer macOS arm64 package" \
               "release/${CHECKSUMS_NAME}#SHA256 checksums" \
               --title "MotionPngTuberPlayer ${GITHUB_REF_NAME}" \
               --generate-notes \
