@@ -57,10 +57,11 @@
   - loop video decode を `mpt-video-backend.*` に切り出し始めた
   - `ci\build-nonwindows-stub.sh` と `pkg-config libobs` fallback で Linux / macOS の stub build 導線を追加
   - `motionpngtuber-native.cpp` の track / sprite / render 側を共通 runtime として non-Windows でも compile できる形へ寄せた
+  - non-Windows audio backend に PortAudio 実装を追加
   - non-Windows image backend に `libpng` 実装を追加
   - non-Windows video backend に FFmpeg 実装を追加
-  - GitHub Actions の Linux / macOS build に `libpng` / FFmpeg 依存を追加
-  - 今後の audio backend / smoke test に進める段階
+  - GitHub Actions の Linux / macOS build に `libpng` / FFmpeg / PortAudio 依存を追加
+  - 今後は OBS 実機 smoke test が主課題
 
 ### 現在の backend 構成
 
@@ -74,6 +75,8 @@
   - 現在の non-Windows loop 動画 decode
 - `libpng`
   - 現在の non-Windows 口スプライト PNG decode
+- PortAudio
+  - 現在の non-Windows 音声入力 device 列挙 / capture
 
 ## 検証済み
 
@@ -95,8 +98,8 @@ portable OBS 32.0.4 で次を確認済みです。
 ## 既知の制約
 
 - 実機検証は **Windows が中心**
-- Linux は runtime core + media decode backend まで入ったが、audio capture / 実機 load / filter 検証は未完
-- macOS は runtime core + media decode backend まで入ったが、audio capture / 実機 load / filter 検証は未完
+- Linux は runtime core + media/audio backend まで入ったが、実機 load / filter 検証は未完
+- macOS は runtime core + media/audio backend まで入ったが、実機 load / filter 検証は未完
 - `.npz` は直接パースではなく、**sibling JSON がある前提の互換対応**
 - 通常インストール版 OBS (`C:\Program Files\obs-studio`) へ配置する場合は管理者権限が必要
 - DLL 内 fallback はあるが、配布物としては `data\obs-plugins\MotionPngTuberPlayer\locale\` 同梱を推奨

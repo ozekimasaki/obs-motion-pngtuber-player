@@ -24,11 +24,11 @@
 - **Linux**
   - build 導線あり
   - GitHub Actions で build / package / release 可能
-  - 共有 runtime core + FFmpeg / libpng backend で media decode を持てる段階まで前進
+  - 共有 runtime core + FFmpeg / libpng / PortAudio backend で media と audio まで持てる段階まで前進
   - ただし現時点では **stub package** 扱い
 - **macOS**
   - build 導線あり
-  - backend 分離に加え、共有 runtime core + FFmpeg / libpng backend で media decode を持てる段階まで前進
+  - backend 分離に加え、共有 runtime core + FFmpeg / libpng / PortAudio backend で media と audio まで持てる段階まで前進
   - GitHub Actions で OBS.app を入れて build / package / release まで回す構成
   - 現時点では **stub package** 扱い
 
@@ -65,6 +65,7 @@ Linux では次があれば流せます。
 - `libavformat-dev`
 - `libavutil-dev`
 - `libswscale-dev`
+- `portaudio19-dev`
 - `pkg-config`
 - `cmake`
 - `ninja-build`
@@ -73,18 +74,18 @@ Ubuntu 24.04 なら例えば:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y cmake ninja-build pkg-config libobs-dev libpng-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
+sudo apt-get install -y cmake ninja-build pkg-config libobs-dev libpng-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev portaudio19-dev
 bash ./ci/build-nonwindows-stub.sh build-linux-stub
 ```
 
-macOS は現在、**OBS.app に同梱される `libobs` バイナリを見せる前提** で、加えて Homebrew の `ffmpeg` / `libpng` も使います。たとえば次を設定してください。
+macOS は現在、**OBS.app に同梱される `libobs` バイナリを見せる前提** で、加えて Homebrew の `ffmpeg` / `libpng` / `portaudio` も使います。たとえば次を設定してください。
 
 - `MPT_MACOS_OBS_LIBRARY=/Applications/OBS.app/Contents/Frameworks/libobs.framework/libobs`
 
 補足:
 
 - 現在の macOS stub build は、repo 内 fallback header + `OBS.app` 同梱 `libobs` の組み合わせで回します。
-- さらに non-Windows media backend のために `brew install ffmpeg libpng` を入れる前提です。
+- さらに non-Windows backend のために `brew install ffmpeg libpng portaudio` を入れる前提です。
 
 ## パッケージ化
 
@@ -140,6 +141,6 @@ Windows からローカルで release まで一気に進める場合:
 ## 既知の制約
 
 - 現状の完成度は **Windows が最優先**
-- Linux / macOS は runtime core 共有化と media decode 実装までは進んだが、audio capture / 実機 smoke test は未完
+- Linux / macOS は runtime core 共有化と media/audio backend 実装までは進んだが、実機 smoke test は未完
 - `.npz` は直接 parse ではなく、sibling JSON 前提の互換対応
 - locale fallback はあるが、配布物では `data/obs-plugins/MotionPngTuberPlayer/locale/` 同梱推奨

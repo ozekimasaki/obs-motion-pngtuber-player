@@ -73,7 +73,7 @@ The current non-Windows build path now shares the runtime core and uses:
 
 - FFmpeg for loop video decode
 - `libpng` for PNG sprite decode
-- Windows-only audio capture for now, so Linux/macOS release assets remain labeled `-stub`
+- PortAudio for audio device enumeration and input capture
 
 ## macOS / Linux build note
 
@@ -97,7 +97,7 @@ For local macOS builds, install `OBS.app`, install `ffmpeg` and `libpng` via Hom
 
 - `MPT_MACOS_OBS_LIBRARY=/Applications/OBS.app/Contents/Frameworks/libobs.framework/libobs`
 
-The release assets remain named `-stub` until non-Windows audio capture/device selection and OBS smoke tests are complete.
+The release assets remain named `-stub` until Linux/macOS OBS smoke tests are complete.
 
 ## Track note
 

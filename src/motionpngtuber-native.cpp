@@ -1096,6 +1096,10 @@ private:
 				return;
 			shutdown_audio();
 		}
+#else
+		std::string ignored_error;
+		mpt_audio_backend_start_input_capture(audio_identity_json_, audio_device_index_, &NativeRuntime::audio_input_callback, this,
+						      &audio_capture_, ignored_error);
 #endif
 	}
 
@@ -1112,6 +1116,9 @@ private:
 				waveInUnprepareHeader(wave_in, &header, sizeof(WAVEHDR));
 		}
 		waveInClose(wave_in);
+#else
+		mpt_audio_backend_stop_input_capture(audio_capture_);
+		audio_capture_ = nullptr;
 #endif
 	}
 
@@ -1159,11 +1166,33 @@ private:
 			return;
 		}
 
+		handle_audio_samples(samples, sample_count, audio_channels_, audio_sample_rate_);
+
+		requeue_buffer(header);
+	}
+#endif
+
+	static void audio_input_callback(const int16_t *samples, size_t sample_count, uint16_t channels, uint32_t sample_rate,
+					 void *userdata)
+	{
+		auto *runtime = reinterpret_cast<NativeRuntime *>(userdata);
+		if (!runtime)
+			return;
+		runtime->handle_audio_samples(samples, sample_count, channels, sample_rate);
+	}
+
+	void handle_audio_samples(const int16_t *samples, size_t sample_count, uint16_t channels, uint32_t sample_rate)
+	{
+		UNUSED_PARAMETER(sample_rate);
+		if (!samples || sample_count == 0)
+			return;
+
 		double sum_sq = 0.0;
 		size_t zero_crossings = 0;
 		double prev = 0.0;
 		bool have_prev = false;
-		for (size_t idx = 0; idx < sample_count; idx += std::max<uint16_t>(1, audio_channels_)) {
+		uint16_t channel_step = std::max<uint16_t>(1, channels);
+		for (size_t idx = 0; idx < sample_count; idx += channel_step) {
 			double sample = (double)samples[idx] / 32768.0;
 			sum_sq += sample * sample;
 			if (have_prev && ((prev < 0.0 && sample >= 0.0) || (prev >= 0.0 && sample < 0.0)))
@@ -1172,15 +1201,12 @@ private:
 			have_prev = true;
 		}
 
-		size_t mono_count = sample_count / std::max<uint16_t>(1, audio_channels_);
+		size_t mono_count = sample_count / channel_step;
 		float rms = mono_count > 0 ? (float)sqrt(sum_sq / (double)mono_count) : 0.0f;
 		float zcr = mono_count > 1 ? (float)zero_crossings / (float)(mono_count - 1) : 0.0f;
 		latest_rms_.store(rms);
 		latest_zcr_.store(zcr);
-
-		requeue_buffer(header);
 	}
-#endif
 
 	void update_mouth_state()
 	{
@@ -1256,6 +1282,7 @@ private:
 	std::string track_file_path_;
 	std::string track_calibrated_path_;
 	std::string audio_identity_json_;
+	MptAudioCapture *audio_capture_ = nullptr;
 #ifdef _WIN32
 	std::atomic<HWAVEIN> wave_in_ {nullptr};
 	uint16_t audio_channels_ = 1;

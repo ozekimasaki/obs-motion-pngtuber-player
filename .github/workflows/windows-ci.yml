@@ -82,10 +82,11 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build pkg-config libobs-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libpng-dev
+          sudo apt-get install -y cmake ninja-build pkg-config libobs-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libpng-dev portaudio19-dev
           pkg-config --modversion libobs
           pkg-config --modversion libavcodec
           pkg-config --modversion libpng
+          pkg-config --modversion portaudio-2.0
 
       - name: Configure and build Linux stub plugin
         run: bash ./ci/build-nonwindows-stub.sh build-linux-stub
@@ -117,7 +118,7 @@ jobs:
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: |
-          for formula in cmake ninja pkgconf ffmpeg libpng; do
+          for formula in cmake ninja pkgconf ffmpeg libpng portaudio; do
             if brew list --formula "${formula}" >/dev/null 2>&1; then
               echo "${formula} is already installed."
             else
