@@ -16,6 +16,12 @@ LEGACY_CONFIG_FILE_NAME = "global.ini"
 LEGACY_CONFIG_SECTION = "OBSWebSocket"
 
 
+def create_ini_parser() -> configparser.RawConfigParser:
+    parser = configparser.RawConfigParser(strict=False)
+    parser.optionxform = str
+    return parser
+
+
 def find_config_path(config_root: Path) -> Path:
     direct_path = config_root / DEFAULT_CONFIG_RELATIVE_PATH
     if direct_path.is_file():
@@ -44,8 +50,7 @@ def load_existing_config(config_path: Path) -> dict[str, object]:
 
 def update_legacy_global_config(config_root: Path, port: int, password: str) -> Path:
     global_config_path = config_root / LEGACY_CONFIG_FILE_NAME
-    parser = configparser.ConfigParser()
-    parser.optionxform = str
+    parser = create_ini_parser()
 
     if global_config_path.exists():
         parser.read(global_config_path, encoding="utf-8")
@@ -62,7 +67,7 @@ def update_legacy_global_config(config_root: Path, port: int, password: str) -> 
 
     global_config_path.parent.mkdir(parents=True, exist_ok=True)
     with global_config_path.open("w", encoding="utf-8", newline="\n") as handle:
-        parser.write(handle)
+        parser.write(handle, space_around_delimiters=False)
 
     return global_config_path
 
