@@ -177,6 +177,63 @@ static bool get_portaudio_device_details(PaDeviceIndex index, std::string &name_
 	return true;
 }
 
+static bool resolve_portaudio_input_device(const std::string &desired_name, const std::string &desired_host_api,
+					   long long desired_index, long long fallback_index, uint32_t *out_index)
+{
+	if (out_index)
+		*out_index = 0;
+
+	PaDeviceIndex count = Pa_GetDeviceCount();
+	if (count <= 0)
+		return false;
+
+	auto matches = [&](PaDeviceIndex idx) -> bool {
+		std::string name;
+		std::string host_api;
+		if (!get_portaudio_device_details(idx, name, host_api))
+			return false;
+		if (!desired_name.empty() && name != desired_name)
+			return false;
+		if (!desired_host_api.empty() && host_api != desired_host_api)
+			return false;
+		return true;
+	};
+
+	if (!desired_name.empty()) {
+		for (PaDeviceIndex idx = 0; idx < count; ++idx) {
+			if (!matches(idx))
+				continue;
+			if (out_index)
+				*out_index = static_cast<uint32_t>(idx);
+			return true;
+		}
+	}
+
+	if (desired_index >= 0 && desired_index < static_cast<long long>(count) && matches(static_cast<PaDeviceIndex>(desired_index))) {
+		if (out_index)
+			*out_index = static_cast<uint32_t>(desired_index);
+		return true;
+	}
+
+	if (fallback_index >= 0 && fallback_index < static_cast<long long>(count) && matches(static_cast<PaDeviceIndex>(fallback_index))) {
+		if (out_index)
+			*out_index = static_cast<uint32_t>(fallback_index);
+		return true;
+	}
+
+	for (PaDeviceIndex idx = 0; idx < count; ++idx) {
+		std::string name;
+		std::string host_api;
+		if (!get_portaudio_device_details(idx, name, host_api))
+			continue;
+		if (out_index)
+			*out_index = static_cast<uint32_t>(idx);
+		return true;
+	}
+
+	return false;
+}
+
 static int portaudio_input_callback(const void *input, void *output, unsigned long frame_count,
 				    const PaStreamCallbackTimeInfo *time_info, PaStreamCallbackFlags status_flags, void *user_data)
 {
@@ -319,63 +376,9 @@ bool mpt_audio_backend_resolve_input_device(const std::string &identity_json, lo
 	std::string error;
 	if (!portaudio_acquire(error))
 		return false;
-
-	PaDeviceIndex count = Pa_GetDeviceCount();
-	if (count <= 0) {
-		portaudio_release();
-		return false;
-	}
-
-	auto matches = [&](PaDeviceIndex idx) -> bool {
-		std::string name;
-		std::string host_api;
-		if (!get_portaudio_device_details(idx, name, host_api))
-			return false;
-		if (!desired_name.empty() && name != desired_name)
-			return false;
-		if (!desired_host_api.empty() && host_api != desired_host_api)
-			return false;
-		return true;
-	};
-
-	if (!desired_name.empty()) {
-		for (PaDeviceIndex idx = 0; idx < count; ++idx) {
-			if (!matches(idx))
-				continue;
-			if (out_index)
-				*out_index = static_cast<uint32_t>(idx);
-			portaudio_release();
-			return true;
-		}
-	}
-
-	if (desired_index >= 0 && desired_index < static_cast<long long>(count) && matches(static_cast<PaDeviceIndex>(desired_index))) {
-		if (out_index)
-			*out_index = static_cast<uint32_t>(desired_index);
-		portaudio_release();
-		return true;
-	}
-
-	if (fallback_index >= 0 && fallback_index < static_cast<long long>(count) && matches(static_cast<PaDeviceIndex>(fallback_index))) {
-		if (out_index)
-			*out_index = static_cast<uint32_t>(fallback_index);
-		portaudio_release();
-		return true;
-	}
-
-	for (PaDeviceIndex idx = 0; idx < count; ++idx) {
-		std::string name;
-		std::string host_api;
-		if (!get_portaudio_device_details(idx, name, host_api))
-			continue;
-		if (out_index)
-			*out_index = static_cast<uint32_t>(idx);
-		portaudio_release();
-		return true;
-	}
-
+	bool resolved = resolve_portaudio_input_device(desired_name, desired_host_api, desired_index, fallback_index, out_index);
 	portaudio_release();
-	return false;
+	return resolved;
 #endif
 }
 
@@ -475,8 +478,13 @@ bool mpt_audio_backend_start_input_capture(const std::string &identity_json, lon
 		return false;
 	}
 
+	std::string desired_name;
+	std::string desired_host_api;
+	long long desired_index = -1;
+	parse_identity_json(identity_json, desired_name, desired_host_api, desired_index);
+
 	uint32_t device_index = 0;
-	if (!mpt_audio_backend_resolve_input_device(identity_json, fallback_index, &device_index)) {
+	if (!resolve_portaudio_input_device(desired_name, desired_host_api, desired_index, fallback_index, &device_index)) {
 		delete capture;
 		portaudio_release();
 		error = "failed to resolve audio input device";
@@ -555,7 +563,6 @@ void mpt_audio_backend_stop_input_capture(MptAudioCapture *capture)
 	}
 #else
 	if (capture->stream) {
-		Pa_StopStream(capture->stream);
 		Pa_CloseStream(capture->stream);
 		capture->stream = nullptr;
 	}
