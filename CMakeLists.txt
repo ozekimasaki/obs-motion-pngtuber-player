@@ -112,6 +112,7 @@ target_sources(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/mpt-audio-backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/mpt-image-backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/mpt-text.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/mpt-video-backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/motionpngtuber-source.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/motionpngtuber-native.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/plugin-support.c

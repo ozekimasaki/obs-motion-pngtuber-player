@@ -6,6 +6,7 @@
 #include "mpt-audio-backend.h"
 #include "mpt-image-backend.h"
 #include "mpt-text.h"
+#include "mpt-video-backend.h"
 
 #include <algorithm>
 #include <array>
@@ -25,17 +26,10 @@
 #include <vector>
 
 #ifdef _WIN32
-#include <mfapi.h>
-#include <mferror.h>
-#include <mfidl.h>
-#include <mfobjects.h>
-#include <mfreadwrite.h>
 #include <mmeapi.h>
-#include <propidl.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Data.Json.h>
 #include <winrt/base.h>
-#include <wincodec.h>
 #endif
 
 struct mpt_native_runtime {
@@ -61,15 +55,6 @@ struct QuadFrame {
 	bool valid = false;
 	bool warp_ready = false;
 };
-
-template<typename T>
-void safe_release(T **ptr)
-{
-	if (ptr && *ptr) {
-		(*ptr)->Release();
-		*ptr = nullptr;
-	}
-}
 
 static std::wstring utf8_to_wide(const char *text)
 {
@@ -704,10 +689,8 @@ public:
 	~NativeRuntime()
 	{
 		shutdown_audio();
-		safe_release(&reader_);
 		mpt_image_backend_destroy(image_backend_);
-		if (mf_started_)
-			MFShutdown();
+		mpt_video_backend_destroy(video_backend_);
 		if (co_initialized_)
 			CoUninitialize();
 	}
@@ -722,16 +705,11 @@ public:
 			return false;
 		}
 
-		hr = MFStartup(MF_VERSION, MFSTARTUP_LITE);
-		if (FAILED(hr)) {
-			error = "MFStartup failed";
-			return false;
-		}
-		mf_started_ = true;
-
 		if (!mpt_image_backend_create(&image_backend_, error)) {
 			return false;
 		}
+		if (!mpt_video_backend_create(&video_backend_, error))
+			return false;
 
 		if (!initialize_video(error))
 			return false;
@@ -784,66 +762,7 @@ public:
 private:
 	bool initialize_video(std::string &error)
 	{
-		if (loop_video_path_.empty()) {
-			error = "Loop video is required.";
-			return false;
-		}
-
-		IMFAttributes *attributes = nullptr;
-		HRESULT hr = MFCreateAttributes(&attributes, 1);
-		if (FAILED(hr)) {
-			error = "failed to create Media Foundation attributes";
-			return false;
-		}
-
-		attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
-		std::wstring video_path = utf8_to_wide(loop_video_path_.c_str());
-		hr = MFCreateSourceReaderFromURL(video_path.c_str(), attributes, &reader_);
-		safe_release(&attributes);
-		if (FAILED(hr) || !reader_) {
-			error = "failed to open loop video with Media Foundation";
-			return false;
-		}
-
-		reader_->SetStreamSelection((DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE);
-		reader_->SetStreamSelection((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE);
-
-		IMFMediaType *type = nullptr;
-		hr = MFCreateMediaType(&type);
-		if (FAILED(hr)) {
-			error = "failed to create Media Foundation media type";
-			return false;
-		}
-
-		type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-		type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-		hr = reader_->SetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, type);
-		safe_release(&type);
-		if (FAILED(hr)) {
-			error = "failed to configure RGB32 video output";
-			return false;
-		}
-
-		IMFMediaType *current_type = nullptr;
-		hr = reader_->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, &current_type);
-		if (FAILED(hr) || !current_type) {
-			error = "failed to read video media type";
-			return false;
-		}
-
-		UINT32 width = 0;
-		UINT32 height = 0;
-		MFGetAttributeSize(current_type, MF_MT_FRAME_SIZE, &width, &height);
-		safe_release(&current_type);
-		if (width == 0 || height == 0) {
-			error = "video dimensions are invalid";
-			return false;
-		}
-
-		output_.width = width;
-		output_.height = height;
-		output_.pixels.resize((size_t)width * height * 4U);
-		return true;
+		return mpt_video_backend_open_loop_video(video_backend_, loop_video_path_, &output_, error);
 	}
 
 	bool initialize_sprites(std::string &error)
@@ -984,63 +903,7 @@ private:
 
 	bool read_next_video_frame(ImageBGRA &image, uint64_t &timestamp_ns)
 	{
-		for (int attempt = 0; attempt < 3; ++attempt) {
-			DWORD flags = 0;
-			LONGLONG timestamp = 0;
-			IMFSample *sample = nullptr;
-			HRESULT hr =
-				reader_->ReadSample((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, &timestamp, &sample);
-			if (FAILED(hr))
-				return false;
-
-			if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
-				PROPVARIANT position;
-				PropVariantInit(&position);
-				position.vt = VT_I8;
-				position.hVal.QuadPart = 0;
-				reader_->SetCurrentPosition(GUID_NULL, position);
-				PropVariantClear(&position);
-				continue;
-			}
-
-			if (!sample)
-				continue;
-
-			IMFMediaBuffer *buffer = nullptr;
-			hr = sample->ConvertToContiguousBuffer(&buffer);
-			safe_release(&sample);
-			if (FAILED(hr) || !buffer) {
-				safe_release(&buffer);
-				return false;
-			}
-
-			BYTE *data = nullptr;
-			DWORD max_length = 0;
-			DWORD current_length = 0;
-			hr = buffer->Lock(&data, &max_length, &current_length);
-			if (FAILED(hr) || !data) {
-				safe_release(&buffer);
-				return false;
-			}
-
-			size_t expected = image.pixels.size();
-			if (current_length < expected) {
-				buffer->Unlock();
-				safe_release(&buffer);
-				return false;
-			}
-
-			memcpy(image.pixels.data(), data, expected);
-			for (size_t idx = 3; idx < image.pixels.size(); idx += 4)
-				image.pixels[idx] = 255;
-
-			buffer->Unlock();
-			safe_release(&buffer);
-			timestamp_ns = (uint64_t)timestamp * 100ULL;
-			return true;
-		}
-
-		return false;
+		return mpt_video_backend_read_next_frame(video_backend_, image, timestamp_ns);
 	}
 
 	void initialize_audio()
@@ -1236,9 +1099,8 @@ private:
 
 private:
 	bool co_initialized_ = false;
-	bool mf_started_ = false;
 	MptImageBackend *image_backend_ = nullptr;
-	IMFSourceReader *reader_ = nullptr;
+	MptVideoBackend *video_backend_ = nullptr;
 	ImageBGRA output_ {};
 	std::array<ImageBGRA, 5> sprites_ {};
 	std::vector<QuadFrame> track_frames_;

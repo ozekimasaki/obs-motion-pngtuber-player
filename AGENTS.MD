@@ -48,6 +48,7 @@
 - macOS / Linux 互換化の下地
   - audio device の列挙 / identity 解決を `mpt-audio-backend.*` に切り出し始めた
   - PNG sprite load を `mpt-image-backend.*` に切り出し始めた
+  - loop video decode を `mpt-video-backend.*` に切り出し始めた
   - 今後の共通 core + OS backend 分離の最初の足場
 
 ### 現在の Windows 実装で使っているもの
