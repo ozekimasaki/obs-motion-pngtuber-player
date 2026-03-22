@@ -150,6 +150,9 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
       - name: Download packaged artifacts
         uses: actions/download-artifact@v5
         with:
@@ -175,14 +178,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           notes='Windows package is the primary supported artifact. Linux package is currently a stub-build artifact. macOS build scaffolding exists in the repository, but hosted CI release packaging is not wired yet.'
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" \
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
               "release/MotionPngTuberPlayer-windows.zip#MotionPngTuberPlayer Windows package" \
               "release/MotionPngTuberPlayer-linux.zip#MotionPngTuberPlayer Linux stub package" \
               "release/SHA256SUMS.txt#SHA256 checksums" \
               --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" \
+            gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
               "release/MotionPngTuberPlayer-windows.zip#MotionPngTuberPlayer Windows package" \
               "release/MotionPngTuberPlayer-linux.zip#MotionPngTuberPlayer Linux stub package" \
               "release/SHA256SUMS.txt#SHA256 checksums" \
