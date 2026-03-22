@@ -387,7 +387,7 @@ jobs:
       - name: Install Linux OBS smoke dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y obs-studio ffmpeg libportaudio2 python3-venv xvfb
+          sudo apt-get install -y obs-studio ffmpeg libportaudio2 python3-venv xvfb xdotool
 
       - name: Download Linux package
         uses: actions/download-artifact@v8
@@ -445,6 +445,15 @@ jobs:
             sleep 20
           }
 
+          request_quit_obs() {
+            local obs_pid="$1"
+            while read -r window_id; do
+              if [[ -n "$window_id" ]]; then
+                xdotool windowclose "$window_id" 2>/dev/null || true
+              fi
+            done < <(xdotool search --pid "$obs_pid" 2>/dev/null || true)
+          }
+
           stop_obs() {
             if [[ ! -f "$OBS_PID_FILE" ]]; then
               return
@@ -455,6 +464,14 @@ jobs:
             if ! kill -0 "$obs_pid" 2>/dev/null; then
               return
             fi
+
+            request_quit_obs "$obs_pid"
+            for _ in $(seq 1 30); do
+              if ! kill -0 "$obs_pid" 2>/dev/null; then
+                return
+              fi
+              sleep 1
+            done
 
             kill -TERM "$obs_pid" 2>/dev/null || true
             for _ in $(seq 1 20); do
@@ -594,7 +611,9 @@ jobs:
           }
 
           request_quit_obs() {
-            osascript -e 'tell application id "com.obsproject.obs-studio" to quit' >/dev/null 2>&1 || true
+            osascript \
+              -e 'tell application id "com.obsproject.obs-studio" to activate' \
+              -e 'tell application id "com.obsproject.obs-studio" to quit' >/dev/null 2>&1 || true
           }
 
           stop_obs() {
@@ -609,7 +628,7 @@ jobs:
             fi
 
             request_quit_obs
-            for _ in $(seq 1 20); do
+            for _ in $(seq 1 30); do
               if ! kill -0 "$obs_pid" 2>/dev/null; then
                 return
               fi
@@ -635,8 +654,6 @@ jobs:
 
           trap 'stop_obs || true' EXIT
 
-          start_obs
-          stop_obs
           "$PYTHON_BIN" ./ci/configure-obs-websocket.py --config-root "$OBS_CONFIG_ROOT" --port "$OBS_WEBSOCKET_PORT"
 
           start_obs
