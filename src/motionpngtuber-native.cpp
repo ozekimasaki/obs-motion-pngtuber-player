@@ -3,6 +3,7 @@
 #endif
 
 #include "motionpngtuber-native.h"
+#include "mpt-audio-backend.h"
 #include "mpt-text.h"
 
 #include <algorithm>
@@ -534,23 +535,6 @@ static void warp_and_blend(ImageBGRA &dst, const ImageBGRA &src, const QuadFrame
 			dst.pixels[dst_offset + 3] = 255;
 		}
 	}
-}
-
-static std::string build_identity_json(UINT index, const std::string &name)
-{
-	std::string out;
-	obs_data_t *identity = obs_data_create();
-	if (!identity)
-		return out;
-
-	obs_data_set_int(identity, "index", (long long)index);
-	obs_data_set_string(identity, "name", name.c_str());
-	obs_data_set_string(identity, "hostapi", "MME");
-	const char *json = obs_data_get_json(identity);
-	if (json)
-		out = json;
-	obs_data_release(identity);
-	return out;
 }
 
 static void add_disabled_list_item(obs_property_t *list, const char *label)
@@ -1206,38 +1190,10 @@ private:
 
 	UINT resolve_audio_device() const
 	{
-		UINT count = waveInGetNumDevs();
-		if (count == 0)
+		uint32_t device_index = 0;
+		if (!mpt_audio_backend_resolve_input_device(audio_identity_json_, audio_device_index_, &device_index))
 			return UINT_MAX;
-
-		std::string desired_name;
-		long long desired_index = -1;
-		if (!audio_identity_json_.empty()) {
-			obs_data_t *identity = obs_data_create_from_json(audio_identity_json_.c_str());
-			if (identity) {
-				const char *name = obs_data_get_string(identity, "name");
-				if (name)
-					desired_name = name;
-				desired_index = obs_data_get_int(identity, "index");
-				obs_data_release(identity);
-			}
-		}
-
-		if (!desired_name.empty()) {
-			for (UINT idx = 0; idx < count; ++idx) {
-				WAVEINCAPSW caps = {};
-				if (waveInGetDevCapsW(idx, &caps, sizeof(caps)) != MMSYSERR_NOERROR)
-					continue;
-				if (wide_to_utf8(caps.szPname) == desired_name)
-					return idx;
-			}
-		}
-
-		if (desired_index >= 0 && desired_index < (long long)count)
-			return (UINT)desired_index;
-		if (audio_device_index_ >= 0 && audio_device_index_ < (long long)count)
-			return (UINT)audio_device_index_;
-		return 0;
+		return static_cast<UINT>(device_index);
 	}
 
 	static void CALLBACK wave_in_callback(HWAVEIN hwi, UINT msg, DWORD_PTR instance, DWORD_PTR param1, DWORD_PTR param2)
@@ -1395,23 +1351,18 @@ extern "C" void mpt_native_populate_audio_devices(obs_property_t *list)
 	obs_property_list_clear(list);
 	obs_property_list_add_string(list, mpt_text("MotionPngTuberPlayer.AudioDeviceAuto"), "");
 
-	UINT count = waveInGetNumDevs();
-	if (count == 0) {
+	std::vector<MptAudioInputDevice> devices = mpt_audio_backend_enumerate_input_devices();
+	if (devices.empty()) {
 		add_disabled_list_item(list, mpt_text("MotionPngTuberPlayer.AudioDeviceNone"));
 		return;
 	}
 
-	for (UINT idx = 0; idx < count; ++idx) {
-		WAVEINCAPSW caps = {};
-		if (waveInGetDevCapsW(idx, &caps, sizeof(caps)) != MMSYSERR_NOERROR)
-			continue;
-
-		std::string name = wide_to_utf8(caps.szPname);
-		if (name.empty())
-			name = mpt_text("MotionPngTuberPlayer.AudioDeviceUnnamed");
-		std::string label = std::to_string(idx) + " " + name + " [MME]";
-		std::string identity = build_identity_json(idx, name);
-		obs_property_list_add_string(list, label.c_str(), identity.c_str());
+	for (auto &device : devices) {
+		if (device.name.empty())
+			device.name = mpt_text("MotionPngTuberPlayer.AudioDeviceUnnamed");
+		if (device.label.empty())
+			device.label = std::to_string(device.index) + " " + device.name;
+		obs_property_list_add_string(list, device.label.c_str(), device.identity_json.c_str());
 	}
 }
 

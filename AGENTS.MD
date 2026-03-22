@@ -45,6 +45,9 @@
 - packaging / CI
   - `package-release.ps1` で OBS 配布レイアウトと zip をローカル生成できるようにした
   - `.github\workflows\windows-ci.yml` で Windows CI build + package artifact upload を追加
+- macOS / Linux 互換化の下地
+  - audio device の列挙 / identity 解決を `mpt-audio-backend.*` に切り出し始めた
+  - 今後の共通 core + OS backend 分離の最初の足場
 
 ### 現在の Windows 実装で使っているもの
 

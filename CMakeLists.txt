@@ -109,6 +109,7 @@ target_sources(
   ${PROJECT_NAME}
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/plugin-main.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/mpt-audio-backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/mpt-text.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/motionpngtuber-source.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/motionpngtuber-native.cpp
