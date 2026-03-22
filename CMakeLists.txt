@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(MotionPngTuberPlayer VERSION 0.1.13 LANGUAGES C CXX)
+project(MotionPngTuberPlayer VERSION 0.1.28 LANGUAGES C CXX)
 
 if(NOT WIN32)
   message(FATAL_ERROR "MotionPngTuberPlayer is currently supported only on Windows. Configure and build this project on a Windows host.")
@@ -135,9 +135,3 @@ set(MPT_PLUGIN_RUNTIME_DESTINATION "obs-plugins/64bit")
 set(MPT_PLUGIN_DATA_DESTINATION "data/obs-plugins/${PROJECT_NAME}")
 
 install(TARGETS ${PROJECT_NAME} LIBRARY DESTINATION ${MPT_PLUGIN_RUNTIME_DESTINATION} RUNTIME DESTINATION ${MPT_PLUGIN_RUNTIME_DESTINATION})
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/ DESTINATION ${MPT_PLUGIN_DATA_DESTINATION})
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python/runtime DESTINATION ${MPT_PLUGIN_DATA_DESTINATION}/python
-        PATTERN "__pycache__" EXCLUDE
-        PATTERN "*.pyc" EXCLUDE)
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/python/lipsync_core.py ${CMAKE_CURRENT_SOURCE_DIR}/python/realtime_emotion_audio.py
-        DESTINATION ${MPT_PLUGIN_DATA_DESTINATION}/python)

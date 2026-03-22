@@ -83,7 +83,7 @@ portable OBS 32.0.4 と GitHub Actions Windows smoke で次を確認済みです
 - Linux / macOS の build・smoke・release は現行方針では対象外
 - `.npz` は直接パースではなく、**sibling JSON がある前提の互換対応**
 - 通常インストール版 OBS (`C:\Program Files\obs-studio`) へ配置する場合は管理者権限が必要
-- DLL 内 fallback はあるが、配布物としては `data\obs-plugins\MotionPngTuberPlayer\locale\` 同梱を推奨
+- DLL に英日 fallback text を内蔵しているため、release 配布物は DLL 単体で自己完結する
 
 ## 重要ファイル
 

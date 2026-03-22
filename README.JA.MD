@@ -60,6 +60,8 @@ powershell -ExecutionPolicy Bypass -File .\install-to-obs.ps1 -ObsRoot .\obs-por
 .\package-release.ps1 -Configuration Release -PackageName MotionPngTuberPlayer-obs-plugin-windows-x64
 ```
 
+- release package は DLL のみで、Python runtime や外部 locale file は同梱しません
+
 Windows からローカルで build / tag / release まで進める場合:
 
 ```powershell
@@ -108,5 +110,5 @@ portable OBS 32.0.4 と GitHub Actions Windows smoke で次を確認済みです
 - 現在のサポート対象は **Windows 64-bit OBS のみ**
 - Linux / macOS build・smoke・release は現行方針では対象外
 - `.npz` は直接 parse ではなく、**sibling JSON がある前提の互換対応**
-- DLL 内 fallback はあるが、配布物としては `data\obs-plugins\MotionPngTuberPlayer\locale\` 同梱を推奨
+- DLL に英日 fallback text を内蔵しているため、release 配布物は自己完結します
 - 通常インストール版 OBS (`C:\Program Files\obs-studio`) へ配置する場合は管理者権限が必要

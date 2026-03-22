@@ -18,7 +18,7 @@ This directory is intended to be managed as a **separate Git repository** from t
 ## Layout
 
 - `src/` native OBS plugin code
-- `data/locale/` plugin locale files
+- `data/locale/` optional source locale files mirrored by the embedded fallback text
 - `build-win-fallback-vs/` Windows fallback build tree for local builds without the full OBS SDK
 
 ## Windows build
@@ -50,6 +50,7 @@ To deploy the current build into OBS on Windows, run:
 To create a distributable folder or zip locally, run:
 
 - `powershell -ExecutionPolicy Bypass -File .\package-release.ps1 -PackageName MotionPngTuberPlayer-obs-plugin-windows-x64`
+- The release package is DLL-only; no Python runtime or external locale files are bundled
 
 To build, tag, and create or update a GitHub release from the current checkout, run:
 
@@ -104,5 +105,5 @@ Verified locally against portable OBS 32.0.4 and in GitHub Actions Windows smoke
 - Windows 64-bit OBS is the supported target
 - Linux/macOS build, smoke, and release paths are no longer supported
 - `.npz` compatibility still depends on a sibling JSON export
-- The DLL has a built-in English/Japanese locale fallback, but shipping `data\obs-plugins\MotionPngTuberPlayer\locale\` is still recommended
+- The DLL includes built-in English/Japanese fallback text, so release artifacts are self-contained
 - Installing into `C:\Program Files\obs-studio` requires Administrator PowerShell
