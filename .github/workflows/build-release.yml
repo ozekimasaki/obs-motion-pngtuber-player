@@ -221,6 +221,7 @@ jobs:
             Start-PortableObs
             Stop-PortableObs
             & $python .\ci\configure-obs-websocket.py --config-root $portableObsConfig --port "${{ env.OBS_WEBSOCKET_PORT }}"
+            if ($LASTEXITCODE -ne 0) { throw "configure-obs-websocket.py failed with exit code $LASTEXITCODE" }
 
             Start-PortableObs
             & $python .\ci\obs-websocket-smoke.py `
@@ -231,6 +232,7 @@ jobs:
               --filter-name "${{ env.SMOKE_FILTER_NAME }}" `
               --asset-dir "$env:RUNNER_TEMP\mpt-smoke-assets" `
               --artifacts-dir $artifactsDir
+            if ($LASTEXITCODE -ne 0) { throw "create-phase smoke failed with exit code $LASTEXITCODE" }
             Stop-PortableObs
 
             Start-PortableObs
@@ -242,6 +244,7 @@ jobs:
               --filter-name "${{ env.SMOKE_FILTER_NAME }}" `
               --asset-dir "$env:RUNNER_TEMP\mpt-smoke-assets" `
               --artifacts-dir $artifactsDir
+            if ($LASTEXITCODE -ne 0) { throw "reopen-phase smoke failed with exit code $LASTEXITCODE" }
           } finally {
             Stop-PortableObs
           }

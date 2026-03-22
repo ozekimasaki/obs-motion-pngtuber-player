@@ -586,9 +586,10 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         capture_target: str | None = None
 
         if not skip_visual_verification:
+            # Crop validation must use the rendered scene output, not a raw source capture.
             before_filter, capture_target = capture_screenshot(
                 client,
-                [args.source_name, args.scene_name],
+                [args.scene_name],
                 artifacts_dir / "before-filter.png",
             )
             before_filter_extent = get_nonblank_extent(before_filter)
@@ -731,7 +732,7 @@ def run_reopen_phase(args: argparse.Namespace) -> dict[str, object]:
         if not skip_visual_verification:
             restarted_image, restart_capture_target = capture_screenshot(
                 client,
-                [args.source_name, args.scene_name],
+                [args.scene_name],
                 artifacts_dir / "after-restart.png",
             )
             assert_true(restarted_image.width > 0 and restarted_image.height > 0, "restart screenshot must be non-empty")
