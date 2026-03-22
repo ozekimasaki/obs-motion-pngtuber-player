@@ -45,23 +45,22 @@
 - packaging / CI
   - `package-release.ps1` を CMake install ベースに寄せ、Windows / Linux / macOS の package 導線を共有化
   - `release-windows.ps1` で Windows package の build / tag / GitHub release 作成をローカル自動化
-  - `.github\workflows\windows-ci.yml` で Windows CI build + package artifact upload を追加
-  - 同 workflow に Linux stub build / package / release asset upload を追加
-  - tag push ベースの GitHub Actions release publish は `v0.1.2` で Windows + Linux asset 作成まで確認済み
-  - 同 workflow に macOS stub build / package / release asset upload を追加し、`v0.1.3` で Windows + Linux + macOS asset 作成まで確認済み
-  - macOS stub build は repo 内 fallback OBS header + `OBS.app` 同梱 `libobs` で通す形にした
+  - `.github\workflows\build-release.yml` で Windows / Linux / macOS build + package + OBS smoke test + release publish を統合
+  - tag push ベースの GitHub Actions release publish は Windows / Linux / macOS の smoke test 成功後のみ動く
+  - Linux / macOS release asset 名から `-stub` を外した
+  - macOS build は repo 内 fallback OBS header + `OBS.app` 同梱 `libobs` で通す形を維持
   - 日本語向け `README.JA.MD` を追加し、README 導線も追加
 - macOS / Linux 互換化の下地
   - audio device の列挙 / identity 解決を `mpt-audio-backend.*` に切り出し始めた
   - PNG sprite load を `mpt-image-backend.*` に切り出し始めた
   - loop video decode を `mpt-video-backend.*` に切り出し始めた
-  - `ci\build-nonwindows-stub.sh` と `pkg-config libobs` fallback で Linux / macOS の stub build 導線を追加
+  - `ci\build-nonwindows.sh` と `pkg-config libobs` fallback で Linux / macOS build 導線を追加
   - `motionpngtuber-native.cpp` の track / sprite / render 側を共通 runtime として non-Windows でも compile できる形へ寄せた
   - non-Windows audio backend に PortAudio 実装を追加
   - non-Windows image backend に `libpng` 実装を追加
   - non-Windows video backend に FFmpeg 実装を追加
   - GitHub Actions の Linux / macOS build に `libpng` / FFmpeg / PortAudio 依存を追加
-  - 今後は OBS 実機 smoke test が主課題
+  - `ci\generate-smoke-assets.py` / `ci\detect-obs-layout.py` / `ci\obs-websocket-smoke.py` で cross-platform OBS smoke test を追加
 
 ### 現在の backend 構成
 
@@ -86,10 +85,19 @@ portable OBS 32.0.4 で次を確認済みです。
 - source create 成功
 - source screenshot 取得成功
 - `crop_filter` の attach 成功
+- OBS properties 経由の audio device list 取得成功
 - `.npz` 選択時の sibling JSON 解決で描画継続
 - loop video だけ指定した場合の auto-fill
 - `SetInputSettings` を繰り返す save-stress test 通過
 - 最新の release hardening 後も portable OBS 32.0.4 で source create / screenshot / 複数回の `SetInputSettings` + screenshot を再確認済み
+
+GitHub Actions の OBS smoke test では Windows / Linux / macOS で次を確認します。
+
+- `motionpngtuber_player` source create
+- audio device property list の取得
+- `crop_filter` 適用後に source screenshot の出力サイズが変わること
+- `SetInputSettings` 更新後の readback
+- OBS restart 後も source / filter / settings が残ること
 
 ビルド済み DLL:
 
@@ -97,9 +105,8 @@ portable OBS 32.0.4 で次を確認済みです。
 
 ## 既知の制約
 
-- 実機検証は **Windows が中心**
-- Linux は runtime core + media/audio backend まで入ったが、実機 load / filter 検証は未完
-- macOS は runtime core + media/audio backend まで入ったが、実機 load / filter 検証は未完
+- 手元での長時間検証は **Windows が中心**
+- Linux / macOS は GitHub Actions の OBS smoke test までは入ったが、手元実機での長時間運用検証量はまだ少ない
 - `.npz` は直接パースではなく、**sibling JSON がある前提の互換対応**
 - 通常インストール版 OBS (`C:\Program Files\obs-studio`) へ配置する場合は管理者権限が必要
 - DLL 内 fallback はあるが、配布物としては `data\obs-plugins\MotionPngTuberPlayer\locale\` 同梱を推奨
@@ -124,10 +131,18 @@ portable OBS 32.0.4 で次を確認済みです。
   - DLL と data をまとめて OBS へ配置するスクリプト
 - `package-release.ps1`
   - 配布用フォルダ / zip を組み立てるスクリプト
+- `ci\build-nonwindows.sh`
+  - Linux / macOS build helper
+- `ci\obs-websocket-smoke.py`
+  - OBS websocket ベースの smoke test 本体
+- `ci\generate-smoke-assets.py`
+  - CI で使う最小 loop video / mouth / track asset 生成
+- `ci\detect-obs-layout.py`
+  - Linux / macOS の OBS executable / plugin path 検出
 - `release-windows.ps1`
   - Windows build + package + tag push + GitHub release 作成スクリプト
-- `.github\workflows\windows-ci.yml`
-  - Windows / Linux / macOS CI build / package / release
+- `.github\workflows\build-release.yml`
+  - Windows / Linux / macOS CI build / package / OBS smoke / release
 
 ## ビルドと配置
 
@@ -151,9 +166,9 @@ powershell -ExecutionPolicy Bypass -File .\install-to-obs.ps1 -ObsRoot .\obs-por
 
 ## 次に着手しやすい項目
 
-- macOS / Linux の OBS 実機 smoke test
-- non-Windows audio backend
-- signing / release automation
+- signing / notarization
+- より広い playback / seek / long-run QA
+- 追加の OBS filter coverage
 - 追加の軽量化レビュー
   - warp / blend
   - decode cadence

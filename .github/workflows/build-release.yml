@@ -1,0 +1,700 @@
+name: Builds
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - v*
+  pull_request:
+  workflow_dispatch:
+
+env:
+  WINDOWS_PACKAGE_NAME: MotionPngTuberPlayer-obs-plugin-windows-x64
+  LINUX_PACKAGE_NAME: MotionPngTuberPlayer-obs-plugin-linux-x64
+  MACOS_PACKAGE_NAME: MotionPngTuberPlayer-obs-plugin-macos-arm64
+  CHECKSUMS_NAME: MotionPngTuberPlayer-release-checksums.txt
+  OBS_WEBSOCKET_PORT: "4457"
+  SMOKE_SCENE_NAME: MotionPngTuberPlayer Smoke Scene
+  SMOKE_SOURCE_NAME: MotionPngTuberPlayer Smoke Source
+  SMOKE_FILTER_NAME: MotionPngTuberPlayer Crop Filter
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install OBS Studio
+        run: |
+          $obsDll = 'C:\Program Files\obs-studio\bin\64bit\obs.dll'
+          if (Test-Path $obsDll) {
+            Write-Host 'OBS Studio is already installed.'
+          } elseif (Get-Command choco -ErrorAction SilentlyContinue) {
+            choco install obs-studio --no-progress -y
+          } elseif (Get-Command winget -ErrorAction SilentlyContinue) {
+            winget install --id OBSProject.OBSStudio --exact --source winget --accept-package-agreements --accept-source-agreements --silent
+          } else {
+            $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/obsproject/obs-studio/releases/latest'
+            $asset = $release.assets | Where-Object { $_.name -match 'Windows.*Installer.*\.exe$' } | Select-Object -First 1
+            if (-not $asset) {
+              throw 'Could not find an OBS Studio Windows installer asset in the latest release.'
+            }
+
+            $installer = Join-Path $env:RUNNER_TEMP 'OBS-Studio-Installer.exe'
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installer
+            Start-Process -FilePath $installer -ArgumentList '/S' -Wait
+          }
+
+          if (-not (Test-Path $obsDll)) {
+            throw 'obs.dll was not found after OBS Studio installation.'
+          }
+
+      - name: Configure fallback build
+        run: cmake -S . -B build-win-fallback-vs
+
+      - name: Build release plugin
+        run: cmake --build build-win-fallback-vs --config Release
+
+      - name: Package release layout
+        run: .\package-release.ps1 -Configuration Release -BuildDir build-win-fallback-vs -Platform windows -PackageName "${{ env.WINDOWS_PACKAGE_NAME }}" -NoZip
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.WINDOWS_PACKAGE_NAME }}
+          path: dist/${{ env.WINDOWS_PACKAGE_NAME }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  build-linux:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config libobs-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libpng-dev portaudio19-dev
+          pkg-config --modversion libobs
+          pkg-config --modversion libavcodec
+          pkg-config --modversion libpng
+          pkg-config --modversion portaudio-2.0
+
+      - name: Configure and build Linux plugin
+        run: bash ./ci/build-nonwindows.sh build-linux
+
+      - name: Package Linux layout
+        shell: pwsh
+        run: .\package-release.ps1 -Configuration Release -BuildDir build-linux -Platform linux -PackageName "${{ env.LINUX_PACKAGE_NAME }}" -NoZip
+
+      - name: Upload Linux package
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.LINUX_PACKAGE_NAME }}
+          path: dist/${{ env.LINUX_PACKAGE_NAME }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  build-macos:
+    runs-on: macos-14
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install macOS build tools
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          for formula in cmake ninja pkgconf ffmpeg libpng portaudio; do
+            if brew list --formula "${formula}" >/dev/null 2>&1; then
+              echo "${formula} is already installed."
+            else
+              brew install "${formula}"
+            fi
+          done
+
+          if brew list --cask obs >/dev/null 2>&1; then
+            echo "obs is already installed."
+          else
+            brew install --cask obs
+          fi
+
+      - name: Detect macOS libobs framework
+        id: macos_obs
+        run: |
+          obs_app_root="/Applications/OBS.app"
+          if [[ ! -d "${obs_app_root}" ]]; then
+            echo "::error::OBS.app was not found at ${obs_app_root} after installation."
+            exit 1
+          fi
+
+          library_path=""
+          for candidate in \
+            "${obs_app_root}/Contents/Frameworks/libobs.framework/libobs" \
+            "${obs_app_root}/Contents/Frameworks/libobs.framework/Versions/A/libobs" \
+            "${obs_app_root}/Contents/Frameworks/libobs.0.dylib"; do
+            if [[ -f "${candidate}" ]]; then
+              library_path="${candidate}"
+              break
+            fi
+          done
+
+          if [[ -z "${library_path}" ]]; then
+            echo "::error::Could not locate the libobs framework binary inside OBS.app."
+            find "${obs_app_root}/Contents/Frameworks" -maxdepth 3 \( -name libobs -o -name 'libobs*.dylib' \) -print || true
+            exit 1
+          fi
+
+          echo "library_path=${library_path}" >> "$GITHUB_OUTPUT"
+          echo "Using macOS libobs at ${library_path}"
+
+      - name: Configure and build macOS plugin
+        env:
+          MPT_MACOS_OBS_LIBRARY: ${{ steps.macos_obs.outputs.library_path }}
+        run: bash ./ci/build-nonwindows.sh build-macos
+
+      - name: Package macOS layout
+        shell: pwsh
+        run: ./package-release.ps1 -Configuration Release -BuildDir build-macos -Platform macos -PackageName "${{ env.MACOS_PACKAGE_NAME }}" -NoZip
+
+      - name: Upload macOS package
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.MACOS_PACKAGE_NAME }}
+          path: dist/${{ env.MACOS_PACKAGE_NAME }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  smoke-windows:
+    needs:
+      - build-windows
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install OBS Studio
+        run: |
+          $obsDll = 'C:\Program Files\obs-studio\bin\64bit\obs.dll'
+          if (Test-Path $obsDll) {
+            Write-Host 'OBS Studio is already installed.'
+          } elseif (Get-Command choco -ErrorAction SilentlyContinue) {
+            choco install obs-studio --no-progress -y
+          } elseif (Get-Command winget -ErrorAction SilentlyContinue) {
+            winget install --id OBSProject.OBSStudio --exact --source winget --accept-package-agreements --accept-source-agreements --silent
+          } else {
+            $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/obsproject/obs-studio/releases/latest'
+            $asset = $release.assets | Where-Object { $_.name -match 'Windows.*Installer.*\.exe$' } | Select-Object -First 1
+            if (-not $asset) {
+              throw 'Could not find an OBS Studio Windows installer asset in the latest release.'
+            }
+
+            $installer = Join-Path $env:RUNNER_TEMP 'OBS-Studio-Installer.exe'
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installer
+            Start-Process -FilePath $installer -ArgumentList '/S' -Wait
+          }
+
+          if (-not (Test-Path $obsDll)) {
+            throw 'obs.dll was not found after OBS Studio installation.'
+          }
+
+      - name: Download Windows package
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.WINDOWS_PACKAGE_NAME }}
+          path: smoke-package
+
+      - name: Prepare smoke test dependencies
+        run: |
+          python -m venv "$env:RUNNER_TEMP\mpt-smoke-venv"
+          $python = "$env:RUNNER_TEMP\mpt-smoke-venv\Scripts\python.exe"
+          & $python -m pip install --upgrade pip websocket-client pillow
+          & $python .\ci\generate-smoke-assets.py --output-dir "$env:RUNNER_TEMP\mpt-smoke-assets"
+
+      - name: Prime and run Windows OBS smoke tests
+        run: |
+          $python = "$env:RUNNER_TEMP\mpt-smoke-venv\Scripts\python.exe"
+          $portableRoot = Join-Path $env:RUNNER_TEMP 'obs-portable-smoke'
+          $portableConfig = Join-Path $portableRoot 'config\obs-studio\plugin_config\obs-websocket'
+          $portableLogs = Join-Path $portableRoot 'config\obs-studio\logs'
+          $artifactRoot = Join-Path $PWD 'smoke-package'
+          $artifactsDir = Join-Path $env:RUNNER_TEMP 'mpt-smoke-artifacts'
+
+          if (Test-Path $portableRoot) {
+            Remove-Item -Path $portableRoot -Recurse -Force
+          }
+          if (Test-Path $artifactsDir) {
+            Remove-Item -Path $artifactsDir -Recurse -Force
+          }
+
+          Copy-Item -Path 'C:\Program Files\obs-studio\*' -Destination $portableRoot -Recurse
+          New-Item -Path (Join-Path $portableRoot 'portable_mode.txt') -ItemType File -Force | Out-Null
+          Copy-Item -Path (Join-Path $artifactRoot '*') -Destination $portableRoot -Recurse -Force
+          New-Item -Path $portableConfig -ItemType Directory -Force | Out-Null
+
+          @{
+            alerts_enabled = $false
+            auth_required = $false
+            first_load = $false
+            server_enabled = $true
+            server_password = 'unused'
+            server_port = [int]"${{ env.OBS_WEBSOCKET_PORT }}"
+          } | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $portableConfig 'config.json') -Encoding utf8
+
+          $obsExe = Join-Path $portableRoot 'bin\64bit\obs64.exe'
+          $obsWorkDir = Join-Path $portableRoot 'bin\64bit'
+          $pidFile = Join-Path $env:RUNNER_TEMP 'obs-smoke.pid'
+
+          function Start-PortableObs {
+            $process = Start-Process -FilePath $obsExe -WorkingDirectory $obsWorkDir -PassThru
+            Set-Content -Path $pidFile -Value $process.Id
+            Start-Sleep -Seconds 15
+          }
+
+          function Stop-PortableObs {
+            if (-not (Test-Path $pidFile)) {
+              return
+            }
+
+            $obsProcessId = Get-Content $pidFile
+            $process = Get-Process -Id $obsProcessId -ErrorAction SilentlyContinue
+            if (-not $process) {
+              return
+            }
+
+            $null = $process.CloseMainWindow()
+            for ($attempt = 0; $attempt -lt 20; $attempt++) {
+              Start-Sleep -Seconds 1
+              if (-not (Get-Process -Id $obsProcessId -ErrorAction SilentlyContinue)) {
+                return
+              }
+            }
+
+            $process = Get-Process -Id $obsProcessId -ErrorAction SilentlyContinue
+            if ($process) {
+              Stop-Process -Id $obsProcessId
+            }
+          }
+
+          try {
+            Start-PortableObs
+            Stop-PortableObs
+
+            Start-PortableObs
+            & $python .\ci\obs-websocket-smoke.py `
+              --phase create `
+              --url "ws://127.0.0.1:${{ env.OBS_WEBSOCKET_PORT }}" `
+              --scene-name "${{ env.SMOKE_SCENE_NAME }}" `
+              --source-name "${{ env.SMOKE_SOURCE_NAME }}" `
+              --filter-name "${{ env.SMOKE_FILTER_NAME }}" `
+              --asset-dir "$env:RUNNER_TEMP\mpt-smoke-assets" `
+              --artifacts-dir $artifactsDir
+            Stop-PortableObs
+
+            Start-PortableObs
+            & $python .\ci\obs-websocket-smoke.py `
+              --phase reopen `
+              --url "ws://127.0.0.1:${{ env.OBS_WEBSOCKET_PORT }}" `
+              --scene-name "${{ env.SMOKE_SCENE_NAME }}" `
+              --source-name "${{ env.SMOKE_SOURCE_NAME }}" `
+              --filter-name "${{ env.SMOKE_FILTER_NAME }}" `
+              --asset-dir "$env:RUNNER_TEMP\mpt-smoke-assets" `
+              --artifacts-dir $artifactsDir
+          } finally {
+            Stop-PortableObs
+          }
+
+      - name: Upload Windows smoke artifacts
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-smoke-artifacts
+          path: |
+            ${{ runner.temp }}\mpt-smoke-artifacts
+            ${{ runner.temp }}\obs-portable-smoke\config\obs-studio\logs
+          if-no-files-found: warn
+          retention-days: 14
+
+  smoke-linux:
+    needs:
+      - build-linux
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Linux OBS smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y obs-studio ffmpeg python3-venv xvfb
+
+      - name: Download Linux package
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.LINUX_PACKAGE_NAME }}
+          path: smoke-package
+
+      - name: Detect Linux OBS layout
+        id: obs_layout
+        run: |
+          python3 ./ci/detect-obs-layout.py --platform linux --github-output "$GITHUB_OUTPUT"
+
+      - name: Install plugin into Linux OBS
+        run: |
+          sudo cp -f smoke-package/obs-plugins/* "${{ steps.obs_layout.outputs.plugin_bin_dir }}/"
+          sudo mkdir -p "${{ steps.obs_layout.outputs.plugin_data_dir }}/MotionPngTuberPlayer"
+          sudo cp -a smoke-package/data/obs-plugins/MotionPngTuberPlayer/. "${{ steps.obs_layout.outputs.plugin_data_dir }}/MotionPngTuberPlayer/"
+
+      - name: Prepare Linux smoke assets
+        run: |
+          python3 -m venv "$RUNNER_TEMP/mpt-smoke-venv"
+          "$RUNNER_TEMP/mpt-smoke-venv/bin/python" -m pip install --upgrade pip websocket-client pillow
+          "$RUNNER_TEMP/mpt-smoke-venv/bin/python" ./ci/generate-smoke-assets.py --output-dir "$RUNNER_TEMP/mpt-smoke-assets" --ffmpeg ffmpeg
+
+      - name: Prime and run Linux OBS smoke tests
+        run: |
+          set -euo pipefail
+
+          export SMOKE_HOME="$RUNNER_TEMP/obs-smoke-home"
+          export XDG_CONFIG_HOME="$SMOKE_HOME/.config"
+          export OBS_RESULTS="$RUNNER_TEMP/mpt-smoke-artifacts"
+          export OBS_STDOUT_LOG="$RUNNER_TEMP/obs-linux.stdout.log"
+          export OBS_PID_FILE="$RUNNER_TEMP/obs-linux.pid"
+          export PYTHON_BIN="$RUNNER_TEMP/mpt-smoke-venv/bin/python"
+          export OBS_URL="ws://127.0.0.1:${OBS_WEBSOCKET_PORT}"
+          export DISPLAY=:99
+
+          rm -rf "$SMOKE_HOME" "$OBS_RESULTS"
+          mkdir -p "$XDG_CONFIG_HOME/obs-studio/plugin_config/obs-websocket"
+
+          cat > "$XDG_CONFIG_HOME/obs-studio/plugin_config/obs-websocket/config.json" <<EOF
+          {
+            "alerts_enabled": false,
+            "auth_required": false,
+            "first_load": false,
+            "server_enabled": true,
+            "server_password": "unused",
+            "server_port": ${OBS_WEBSOCKET_PORT}
+          }
+          EOF
+
+          Xvfb :99 -screen 0 1920x1080x24 >"$RUNNER_TEMP/xvfb.log" 2>&1 &
+          XVFB_PID=$!
+
+          start_obs() {
+            HOME="$SMOKE_HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" "${{ steps.obs_layout.outputs.obs_executable }}" \
+              --disable-shutdown-check \
+              --disable-missing-files-check \
+              --multi >"$OBS_STDOUT_LOG" 2>&1 &
+            local obs_pid=$!
+            echo "$obs_pid" > "$OBS_PID_FILE"
+            sleep 20
+          }
+
+          stop_obs() {
+            if [[ ! -f "$OBS_PID_FILE" ]]; then
+              return
+            fi
+
+            local obs_pid
+            obs_pid="$(cat "$OBS_PID_FILE")"
+            if ! kill -0 "$obs_pid" 2>/dev/null; then
+              return
+            fi
+
+            kill -TERM "$obs_pid" 2>/dev/null || true
+            for _ in $(seq 1 20); do
+              if ! kill -0 "$obs_pid" 2>/dev/null; then
+                return
+              fi
+              sleep 1
+            done
+
+            kill -KILL "$obs_pid" 2>/dev/null || true
+          }
+
+          cleanup() {
+            stop_obs || true
+            if kill -0 "$XVFB_PID" 2>/dev/null; then
+              kill -TERM "$XVFB_PID" 2>/dev/null || true
+            fi
+          }
+
+          trap cleanup EXIT
+
+          start_obs
+          stop_obs
+
+          start_obs
+          "$PYTHON_BIN" ./ci/obs-websocket-smoke.py \
+            --phase create \
+            --url "$OBS_URL" \
+            --scene-name "$SMOKE_SCENE_NAME" \
+            --source-name "$SMOKE_SOURCE_NAME" \
+            --filter-name "$SMOKE_FILTER_NAME" \
+            --asset-dir "$RUNNER_TEMP/mpt-smoke-assets" \
+            --artifacts-dir "$OBS_RESULTS"
+          stop_obs
+
+          start_obs
+          "$PYTHON_BIN" ./ci/obs-websocket-smoke.py \
+            --phase reopen \
+            --url "$OBS_URL" \
+            --scene-name "$SMOKE_SCENE_NAME" \
+            --source-name "$SMOKE_SOURCE_NAME" \
+            --filter-name "$SMOKE_FILTER_NAME" \
+            --asset-dir "$RUNNER_TEMP/mpt-smoke-assets" \
+            --artifacts-dir "$OBS_RESULTS"
+
+      - name: Upload Linux smoke artifacts
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-smoke-artifacts
+          path: |
+            ${{ runner.temp }}/mpt-smoke-artifacts
+            ${{ runner.temp }}/obs-linux.stdout.log
+            ${{ runner.temp }}/xvfb.log
+            ${{ runner.temp }}/obs-smoke-home/.config/obs-studio/logs
+          if-no-files-found: warn
+          retention-days: 14
+
+  smoke-macos:
+    needs:
+      - build-macos
+    runs-on: macos-14
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install macOS OBS smoke dependencies
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          if brew list --formula ffmpeg >/dev/null 2>&1; then
+            echo "ffmpeg is already installed."
+          else
+            brew install ffmpeg
+          fi
+
+          if brew list --cask obs >/dev/null 2>&1; then
+            echo "obs is already installed."
+          else
+            brew install --cask obs
+          fi
+
+      - name: Download macOS package
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.MACOS_PACKAGE_NAME }}
+          path: smoke-package
+
+      - name: Detect macOS OBS layout
+        id: obs_layout
+        run: |
+          python3 ./ci/detect-obs-layout.py --platform macos --github-output "$GITHUB_OUTPUT"
+
+      - name: Install plugin into macOS OBS
+        run: |
+          sudo cp -f smoke-package/obs-plugins/* "${{ steps.obs_layout.outputs.plugin_bin_dir }}/"
+          sudo mkdir -p "${{ steps.obs_layout.outputs.plugin_data_dir }}/MotionPngTuberPlayer"
+          sudo cp -a smoke-package/data/obs-plugins/MotionPngTuberPlayer/. "${{ steps.obs_layout.outputs.plugin_data_dir }}/MotionPngTuberPlayer/"
+
+      - name: Prepare macOS smoke assets
+        run: |
+          python3 -m venv "$RUNNER_TEMP/mpt-smoke-venv"
+          "$RUNNER_TEMP/mpt-smoke-venv/bin/python" -m pip install --upgrade pip websocket-client pillow
+          "$RUNNER_TEMP/mpt-smoke-venv/bin/python" ./ci/generate-smoke-assets.py --output-dir "$RUNNER_TEMP/mpt-smoke-assets" --ffmpeg ffmpeg
+
+      - name: Prime and run macOS OBS smoke tests
+        run: |
+          set -euo pipefail
+
+          export SMOKE_HOME="$RUNNER_TEMP/obs-smoke-home"
+          export OBS_RESULTS="$RUNNER_TEMP/mpt-smoke-artifacts"
+          export OBS_STDOUT_LOG="$RUNNER_TEMP/obs-macos.stdout.log"
+          export OBS_PID_FILE="$RUNNER_TEMP/obs-macos.pid"
+          export PYTHON_BIN="$RUNNER_TEMP/mpt-smoke-venv/bin/python"
+          export OBS_URL="ws://127.0.0.1:${OBS_WEBSOCKET_PORT}"
+
+          rm -rf "$SMOKE_HOME" "$OBS_RESULTS"
+          mkdir -p "$SMOKE_HOME/Library/Application Support/obs-studio/plugin_config/obs-websocket"
+
+          cat > "$SMOKE_HOME/Library/Application Support/obs-studio/plugin_config/obs-websocket/config.json" <<EOF
+          {
+            "alerts_enabled": false,
+            "auth_required": false,
+            "first_load": false,
+            "server_enabled": true,
+            "server_password": "unused",
+            "server_port": ${OBS_WEBSOCKET_PORT}
+          }
+          EOF
+
+          start_obs() {
+            HOME="$SMOKE_HOME" "${{ steps.obs_layout.outputs.obs_executable }}" \
+              --disable-shutdown-check \
+              --disable-missing-files-check \
+              --multi >"$OBS_STDOUT_LOG" 2>&1 &
+            local obs_pid=$!
+            echo "$obs_pid" > "$OBS_PID_FILE"
+            sleep 20
+          }
+
+          stop_obs() {
+            if [[ ! -f "$OBS_PID_FILE" ]]; then
+              return
+            fi
+
+            local obs_pid
+            obs_pid="$(cat "$OBS_PID_FILE")"
+            if ! kill -0 "$obs_pid" 2>/dev/null; then
+              return
+            fi
+
+            kill -TERM "$obs_pid" 2>/dev/null || true
+            for _ in $(seq 1 20); do
+              if ! kill -0 "$obs_pid" 2>/dev/null; then
+                return
+              fi
+              sleep 1
+            done
+
+            kill -KILL "$obs_pid" 2>/dev/null || true
+          }
+
+          trap 'stop_obs || true' EXIT
+
+          start_obs
+          stop_obs
+
+          start_obs
+          "$PYTHON_BIN" ./ci/obs-websocket-smoke.py \
+            --phase create \
+            --url "$OBS_URL" \
+            --scene-name "$SMOKE_SCENE_NAME" \
+            --source-name "$SMOKE_SOURCE_NAME" \
+            --filter-name "$SMOKE_FILTER_NAME" \
+            --asset-dir "$RUNNER_TEMP/mpt-smoke-assets" \
+            --artifacts-dir "$OBS_RESULTS"
+          stop_obs
+
+          start_obs
+          "$PYTHON_BIN" ./ci/obs-websocket-smoke.py \
+            --phase reopen \
+            --url "$OBS_URL" \
+            --scene-name "$SMOKE_SCENE_NAME" \
+            --source-name "$SMOKE_SOURCE_NAME" \
+            --filter-name "$SMOKE_FILTER_NAME" \
+            --asset-dir "$RUNNER_TEMP/mpt-smoke-assets" \
+            --artifacts-dir "$OBS_RESULTS"
+
+      - name: Upload macOS smoke artifacts
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: macos-smoke-artifacts
+          path: |
+            ${{ runner.temp }}/mpt-smoke-artifacts
+            ${{ runner.temp }}/obs-macos.stdout.log
+            ${{ runner.temp }}/obs-smoke-home/Library/Application Support/obs-studio/logs
+          if-no-files-found: warn
+          retention-days: 14
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build-windows
+      - build-linux
+      - build-macos
+      - smoke-windows
+      - smoke-linux
+      - smoke-macos
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-artifacts
+
+      - name: Create release archives
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip
+          mkdir -p release
+          (
+            cd "release-artifacts/${WINDOWS_PACKAGE_NAME}"
+            zip -rq "../../release/${WINDOWS_PACKAGE_NAME}.zip" .
+          )
+          (
+            cd "release-artifacts/${LINUX_PACKAGE_NAME}"
+            zip -rq "../../release/${LINUX_PACKAGE_NAME}.zip" .
+          )
+          (
+            cd "release-artifacts/${MACOS_PACKAGE_NAME}"
+            zip -rq "../../release/${MACOS_PACKAGE_NAME}.zip" .
+          )
+          sha256sum \
+            "release/${WINDOWS_PACKAGE_NAME}.zip" \
+            "release/${LINUX_PACKAGE_NAME}.zip" \
+            "release/${MACOS_PACKAGE_NAME}.zip" > "release/${CHECKSUMS_NAME}"
+
+      - name: Publish GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes='Windows, Linux, and macOS packages are built and OBS smoke-tested in GitHub Actions before release publication.'
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+              "release/${WINDOWS_PACKAGE_NAME}.zip#MotionPngTuberPlayer Windows x64 package" \
+              "release/${LINUX_PACKAGE_NAME}.zip#MotionPngTuberPlayer Linux x64 package" \
+              "release/${MACOS_PACKAGE_NAME}.zip#MotionPngTuberPlayer macOS arm64 package" \
+              "release/${CHECKSUMS_NAME}#SHA256 checksums" \
+              --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+              "release/${WINDOWS_PACKAGE_NAME}.zip#MotionPngTuberPlayer Windows x64 package" \
+              "release/${LINUX_PACKAGE_NAME}.zip#MotionPngTuberPlayer Linux x64 package" \
+              "release/${MACOS_PACKAGE_NAME}.zip#MotionPngTuberPlayer macOS arm64 package" \
+              "release/${CHECKSUMS_NAME}#SHA256 checksums" \
+              --title "MotionPngTuberPlayer ${GITHUB_REF_NAME}" \
+              --generate-notes \
+              --notes "${notes}" \
+              --prerelease
+          fi

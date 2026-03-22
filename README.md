@@ -45,13 +45,13 @@ To create a distributable folder/zip locally, run:
 - `powershell -ExecutionPolicy Bypass -File .\\package-release.ps1 -PackageName MotionPngTuberPlayer-obs-plugin-windows-x64`
 - To build, tag, and create/update a GitHub release from the current checkout, run: `powershell -ExecutionPolicy Bypass -File .\\release-windows.ps1 -Tag v0.1.0 -PreRelease`
 
-GitHub Actions now includes a build workflow at `.github\\workflows\\windows-ci.yml` that builds the Windows release package, compiles the Linux and macOS packages, and publishes all three assets on tag pushes.
+GitHub Actions now includes a build-and-release workflow at `.github\\workflows\\build-release.yml` that builds the Windows, Linux, and macOS packages, runs OBS smoke tests on all three platforms, and only then publishes tag assets.
 
 The release asset names are now more explicit:
 
 - `MotionPngTuberPlayer-obs-plugin-windows-x64.zip`
-- `MotionPngTuberPlayer-obs-plugin-linux-x64-stub.zip`
-- `MotionPngTuberPlayer-obs-plugin-macos-arm64-stub.zip`
+- `MotionPngTuberPlayer-obs-plugin-linux-x64.zip`
+- `MotionPngTuberPlayer-obs-plugin-macos-arm64.zip`
 - `MotionPngTuberPlayer-release-checksums.txt`
 
 The CI workflow still uploads extracted folders as temporary Actions artifacts so the downloadable release assets do not become a zip containing another zip.
@@ -77,7 +77,7 @@ The current non-Windows build path now shares the runtime core and uses:
 
 ## macOS / Linux build note
 
-The repository now contains a shared runtime core plus non-Windows media backends, with a shared helper script at `ci/build-nonwindows-stub.sh`.
+The repository now contains a shared runtime core plus non-Windows media/audio backends, with a shared helper script at `ci/build-nonwindows.sh`.
 
 Linux builds are expected to work with:
 
@@ -91,13 +91,13 @@ Linux builds are expected to work with:
 - `cmake`
 - `ninja-build`
 
-macOS builds now have a GitHub Actions path too. The hosted `macos-14` runner installs `OBS.app`, locates the bundled `libobs` framework, and installs Homebrew `ffmpeg` / `libpng` so the shared non-Windows media backends can compile.
+macOS builds now have a GitHub Actions path too. The hosted `macos-14` runner installs `OBS.app`, locates the bundled `libobs` framework, installs Homebrew `ffmpeg` / `libpng` / `portaudio`, and then runs an OBS smoke test against the packaged plugin.
 
-For local macOS builds, install `OBS.app`, install `ffmpeg` and `libpng` via Homebrew, and point `MPT_MACOS_OBS_LIBRARY` at the bundled `libobs` binary, for example:
+For local macOS builds, install `OBS.app`, install `ffmpeg`, `libpng`, and `portaudio` via Homebrew, and point `MPT_MACOS_OBS_LIBRARY` at the bundled `libobs` binary, for example:
 
 - `MPT_MACOS_OBS_LIBRARY=/Applications/OBS.app/Contents/Frameworks/libobs.framework/libobs`
 
-The release assets remain named `-stub` until Linux/macOS OBS smoke tests are complete.
+The release workflow now gates Linux/macOS publication on real OBS smoke tests that cover source creation, audio device list exposure, `crop_filter` application, screenshot capture, settings updates, and restart persistence.
 
 ## Track note
 
@@ -115,12 +115,15 @@ JSON compatibility now covers both:
 
 ## Verification status
 
-Verified locally against portable OBS 32.0.4 on the native-only Windows path:
+Verified locally against portable OBS 32.0.4 on the native-only Windows path, and now also exercised in GitHub Actions OBS smoke jobs on Windows, Linux, and macOS:
 
 - the module loads and registers `motionpngtuber_player`
 - source creation succeeds through obs-websocket
+- the audio-device property list is populated through the OBS properties API
 - standard OBS filters can be attached to the source (verified with `crop_filter`)
 - source screenshots are produced successfully from the native runtime
+- `crop_filter` changes the rendered source size and survives an OBS restart
+- `SetInputSettings` updates survive an OBS restart
 - selecting only the loop video path auto-fills sibling `mouth`, `mouth_track.json`, and `mouth_track_calibrated.npz` when present
 - selecting a `.npz` track path works when a sibling `mouth_track.json` exists
 - legacy `quad` JSON and flat `x0..x3` / `y0..y3` JSON both render correctly

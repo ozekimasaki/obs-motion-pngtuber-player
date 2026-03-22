@@ -23,14 +23,14 @@
   - 配布 asset あり
 - **Linux**
   - build 導線あり
-  - GitHub Actions で build / package / release 可能
-  - 共有 runtime core + FFmpeg / libpng / PortAudio backend で media と audio まで持てる段階まで前進
-  - ただし現時点では **stub package** 扱い
+  - GitHub Actions で build / package / OBS smoke test / release 可能
+  - 共有 runtime core + FFmpeg / libpng / PortAudio backend で media / audio が実装済み
+  - release asset は **非 stub 名** で publish
 - **macOS**
   - build 導線あり
-  - backend 分離に加え、共有 runtime core + FFmpeg / libpng / PortAudio backend で media と audio まで持てる段階まで前進
-  - GitHub Actions で OBS.app を入れて build / package / release まで回す構成
-  - 現時点では **stub package** 扱い
+  - backend 分離に加え、共有 runtime core + FFmpeg / libpng / PortAudio backend で media / audio が実装済み
+  - GitHub Actions で OBS.app を入れて build / package / OBS smoke test / release まで回す構成
+  - release asset は **非 stub 名** で publish
 
 ## Windows でのビルド
 
@@ -54,7 +54,7 @@ powershell -ExecutionPolicy Bypass -File .\install-to-obs.ps1
 共通 helper:
 
 ```bash
-bash ./ci/build-nonwindows-stub.sh build-linux-stub
+bash ./ci/build-nonwindows.sh build-linux
 ```
 
 Linux では次があれば流せます。
@@ -75,7 +75,7 @@ Ubuntu 24.04 なら例えば:
 ```bash
 sudo apt-get update
 sudo apt-get install -y cmake ninja-build pkg-config libobs-dev libpng-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev portaudio19-dev
-bash ./ci/build-nonwindows-stub.sh build-linux-stub
+bash ./ci/build-nonwindows.sh build-linux
 ```
 
 macOS は現在、**OBS.app に同梱される `libobs` バイナリを見せる前提** で、加えて Homebrew の `ffmpeg` / `libpng` / `portaudio` も使います。たとえば次を設定してください。
@@ -84,8 +84,8 @@ macOS は現在、**OBS.app に同梱される `libobs` バイナリを見せる
 
 補足:
 
-- 現在の macOS stub build は、repo 内 fallback header + `OBS.app` 同梱 `libobs` の組み合わせで回します。
-- さらに non-Windows backend のために `brew install ffmpeg libpng portaudio` を入れる前提です。
+- 現在の macOS build は、repo 内 fallback header + `OBS.app` 同梱 `libobs` の組み合わせで回します。
+- さらに non-Windows backend / smoke asset 生成のために `brew install ffmpeg libpng portaudio` を入れる前提です。
 
 ## パッケージ化
 
@@ -98,29 +98,30 @@ macOS は現在、**OBS.app に同梱される `libobs` バイナリを見せる
 Linux package 例:
 
 ```powershell
-pwsh ./package-release.ps1 -BuildDir build-linux-stub -Platform linux
+pwsh ./package-release.ps1 -BuildDir build-linux -Platform linux
 ```
 
 ## GitHub Actions
 
-`.github/workflows/windows-ci.yml` で次を回しています。
+`.github/workflows/build-release.yml` で次を回しています。
 
 - Windows release package build
-- Linux stub build
-- macOS stub build
+- Linux package build
+- macOS package build
+- Windows / Linux / macOS OBS smoke test
 - tag push 時の GitHub release asset 更新
 
 現時点の release asset 方針:
 
 - Windows: 実利用向け package
-- Linux: stub package
-- macOS: stub package
+- Linux: OBS smoke test 済み package
+- macOS: OBS smoke test 済み package
 
 現在の release asset 名:
 
 - `MotionPngTuberPlayer-obs-plugin-windows-x64.zip`
-- `MotionPngTuberPlayer-obs-plugin-linux-x64-stub.zip`
-- `MotionPngTuberPlayer-obs-plugin-macos-arm64-stub.zip`
+- `MotionPngTuberPlayer-obs-plugin-linux-x64.zip`
+- `MotionPngTuberPlayer-obs-plugin-macos-arm64.zip`
 - `MotionPngTuberPlayer-release-checksums.txt`
 
 ## GitHub release
@@ -141,6 +142,6 @@ Windows からローカルで release まで一気に進める場合:
 ## 既知の制約
 
 - 現状の完成度は **Windows が最優先**
-- Linux / macOS は runtime core 共有化と media/audio backend 実装までは進んだが、実機 smoke test は未完
+- Linux / macOS は GitHub Actions の OBS smoke test までは入ったが、手元実機での長時間検証量はまだ Windows より少ない
 - `.npz` は直接 parse ではなく、sibling JSON 前提の互換対応
 - locale fallback はあるが、配布物では `data/obs-plugins/MotionPngTuberPlayer/locale/` 同梱推奨

@@ -54,8 +54,8 @@ if ([string]::IsNullOrWhiteSpace($Platform)) {
 if ([string]::IsNullOrWhiteSpace($BuildDir)) {
     switch ($Platform) {
         'windows' { $BuildDir = 'build-win-fallback-vs' }
-        'linux' { $BuildDir = 'build-linux-stub' }
-        'macos' { $BuildDir = 'build-macos-stub' }
+        'linux' { $BuildDir = 'build-linux' }
+        'macos' { $BuildDir = 'build-macos' }
     }
 }
 
