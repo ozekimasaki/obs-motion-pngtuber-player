@@ -1,10 +1,11 @@
-name: Windows CI
+name: Builds
 
 on:
   push:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build-windows:
@@ -59,3 +60,22 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+  build-linux-stub:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config libobs-dev
+          pkg-config --modversion libobs
+
+      - name: Configure and build Linux stub plugin
+        run: bash ./ci/build-nonwindows-stub.sh build-linux-stub

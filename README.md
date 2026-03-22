@@ -41,8 +41,9 @@ To deploy the current build into OBS on Windows, run:
 To create a distributable folder/zip locally, run:
 
 - `powershell -ExecutionPolicy Bypass -File .\\package-release.ps1`
+- To build, tag, and create/update a GitHub release from the current checkout, run: `powershell -ExecutionPolicy Bypass -File .\\release-windows.ps1 -Tag v0.1.0 -PreRelease`
 
-GitHub Actions now includes a Windows build workflow at `.github\\workflows\\windows-ci.yml` that installs OBS Studio, builds the fallback Windows target, packages the plugin layout, and uploads the extracted package directory as the workflow artifact.
+GitHub Actions now includes a build workflow at `.github\\workflows\\windows-ci.yml` that builds the Windows release package and also compiles the non-Windows stub plugin on Linux against `libobs-dev`.
 
 The local packaging script still produces `dist\\MotionPngTuberPlayer-windows.zip`, but the CI workflow intentionally uploads only the extracted folder so the downloadable Actions artifact does not become a zip containing another zip.
 
@@ -58,6 +59,25 @@ The native-only Windows runtime currently uses:
 - Media Foundation for loop video decode
 - Windows Imaging Component (WIC) for PNG sprite decode
 - WinMM / `waveIn` for per-source audio input capture
+
+## macOS / Linux stub build note
+
+The repository now contains cross-platform backend stubs and a shared helper script at `ci/build-nonwindows-stub.sh`.
+
+Linux stub builds are expected to work with:
+
+- `libobs-dev`
+- `pkg-config`
+- `cmake`
+- `ninja-build`
+
+macOS stub builds now have a scaffolded path too, but they require an OBS / `libobs` development install exposed through either:
+
+- `libobs_DIR`
+- `PKG_CONFIG_PATH`
+- `OBS_PREFIX`
+
+The Homebrew cask `obs` is useful for runtime installation, but a stub plugin build still needs development headers / metadata from an OBS or `libobs` build.
 
 ## Track note
 

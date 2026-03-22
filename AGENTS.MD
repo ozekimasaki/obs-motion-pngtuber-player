@@ -44,11 +44,14 @@
   - `install-to-obs.ps1` で 64-bit OBS 配置先チェックを追加
 - packaging / CI
   - `package-release.ps1` で OBS 配布レイアウトと zip をローカル生成できるようにした
+  - `release-windows.ps1` で Windows package の build / tag / GitHub release 作成をローカル自動化
   - `.github\workflows\windows-ci.yml` で Windows CI build + package artifact upload を追加
+  - 同 workflow に Linux stub build を追加
 - macOS / Linux 互換化の下地
   - audio device の列挙 / identity 解決を `mpt-audio-backend.*` に切り出し始めた
   - PNG sprite load を `mpt-image-backend.*` に切り出し始めた
   - loop video decode を `mpt-video-backend.*` に切り出し始めた
+  - `ci\build-nonwindows-stub.sh` と `pkg-config libobs` fallback で Linux / macOS の stub build 導線を追加
   - 今後の共通 core + OS backend 分離の最初の足場
 
 ### 現在の Windows 実装で使っているもの
@@ -80,7 +83,8 @@ portable OBS 32.0.4 で次を確認済みです。
 ## 既知の制約
 
 - 実機検証は **Windows が中心**
-- macOS / Linux は未ビルド・未検証
+- Linux は stub build 導線を追加したが、実機 load / filter 検証は未完
+- macOS は stub build 導線を追加したが、実機 build / load 検証は未完
 - `.npz` は直接パースではなく、**sibling JSON がある前提の互換対応**
 - 通常インストール版 OBS (`C:\Program Files\obs-studio`) へ配置する場合は管理者権限が必要
 - DLL 内 fallback はあるが、配布物としては `data\obs-plugins\MotionPngTuberPlayer\locale\` 同梱を推奨
@@ -106,8 +110,10 @@ portable OBS 32.0.4 で次を確認済みです。
   - DLL と data をまとめて OBS へ配置するスクリプト
 - `package-release.ps1`
   - 配布用フォルダ / zip を組み立てるスクリプト
+- `release-windows.ps1`
+  - Windows build + package + tag push + GitHub release 作成スクリプト
 - `.github\workflows\windows-ci.yml`
-  - Windows CI build と package artifact upload
+  - Windows CI build / package と Linux stub build
 
 ## ビルドと配置
 

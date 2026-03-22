@@ -1,5 +1,6 @@
 #include "mpt-video-backend.h"
 
+#include <cstring>
 #include <new>
 
 #ifdef _WIN32
@@ -171,8 +172,8 @@ bool mpt_video_backend_open_loop_video(MptVideoBackend *backend, const std::stri
 	out_frame->pixels.resize(static_cast<size_t>(width) * height * 4U);
 	return true;
 #else
-	UNUSED_PARAMETER(backend);
-	UNUSED_PARAMETER(loop_video_path);
+	(void)backend;
+	(void)loop_video_path;
 	error = "video backend is only implemented for Windows builds";
 	return false;
 #endif
@@ -242,8 +243,8 @@ bool mpt_video_backend_read_next_frame(MptVideoBackend *backend, ImageBGRA &imag
 		return true;
 	}
 #else
-	UNUSED_PARAMETER(backend);
-	UNUSED_PARAMETER(image);
+	(void)backend;
+	(void)image;
 	return false;
 #endif
 }

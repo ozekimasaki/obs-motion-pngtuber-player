@@ -140,8 +140,8 @@ ImageBGRA mpt_image_backend_load_png_bgra(MptImageBackend *backend, const std::f
 
 	return out;
 #else
-	UNUSED_PARAMETER(backend);
-	UNUSED_PARAMETER(path);
+	(void)backend;
+	(void)path;
 	error = "image backend is only implemented for Windows builds";
 	return out;
 #endif
