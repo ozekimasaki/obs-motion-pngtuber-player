@@ -1,0 +1,36 @@
+# Build outputs
+build/
+out/
+dist/
+build-win-fallback/
+build-win-fallback-vs/
+
+# Local OBS test trees
+obs-local-test/
+obs-portable-test/
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+
+# Python
+python/__pycache__/
+python/**/*.pyc
+python/**/*.pyo
+python/**/*.pyd
+
+# Local environments
+.venv/
+venv/
+env/
+
+# Generated runtime artifacts
+*.framebuffer
+*-config.json
+*.tmp
+*.bak
+
+# Platform noise
+Thumbs.db
+.DS_Store

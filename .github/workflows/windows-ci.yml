@@ -1,0 +1,45 @@
+name: Windows CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install OBS Studio
+        run: |
+          winget install --id OBSProject.OBSStudio --exact --source winget --accept-package-agreements --accept-source-agreements --silent
+          if (-not (Test-Path 'C:\Program Files\obs-studio\bin\64bit\obs.dll')) {
+            throw 'obs.dll was not found after OBS Studio installation.'
+          }
+
+      - name: Configure fallback build
+        run: cmake -S . -B build-win-fallback-vs
+
+      - name: Build release plugin
+        run: cmake --build build-win-fallback-vs --config Release
+
+      - name: Package release layout
+        run: .\package-release.ps1 -Configuration Release
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: MotionPngTuberPlayer-windows
+          path: |
+            dist/MotionPngTuberPlayer-windows
+            dist/MotionPngTuberPlayer-windows.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

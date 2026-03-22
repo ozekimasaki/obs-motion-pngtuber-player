@@ -1,0 +1,27 @@
+#include "plugin-support.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+const char *PLUGIN_NAME = "@CMAKE_PROJECT_NAME@";
+const char *PLUGIN_VERSION = "@CMAKE_PROJECT_VERSION@";
+const char *PLUGIN_REPO_ROOT = "@MPT_PROJECT_ROOT_C@";
+
+void obs_log(int log_level, const char *format, ...)
+{
+	size_t length = 4 + strlen(PLUGIN_NAME) + strlen(format);
+	char *template = malloc(length + 1);
+
+	if (!template)
+		return;
+
+	snprintf(template, length, "[%s] %s", PLUGIN_NAME, format);
+
+	va_list args;
+	va_start(args, format);
+	blogva(log_level, template, args);
+	va_end(args);
+
+	free(template);
+}

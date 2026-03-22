@@ -1,0 +1,17 @@
+[project]
+name = "motionpngtuber-player-runtime"
+version = "0.1.0"
+description = "Minimal runtime dependencies for MotionPngTuberPlayer worker builds"
+requires-python = "==3.10.*"
+dependencies = [
+    "numpy>=1.24.0,<2.0.0",
+    "opencv-python>=4.8.0",
+    "pillow>=10.0.0",
+    "scipy>=1.10.0",
+    "sounddevice>=0.4.6",
+]
+
+[tool.uv]
+override-dependencies = [
+    "opencv-python-headless>=4.5.4.58 ; sys_platform == 'never'",
+]
