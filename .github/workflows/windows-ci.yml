@@ -19,8 +19,26 @@ jobs:
 
       - name: Install OBS Studio
         run: |
-          winget install --id OBSProject.OBSStudio --exact --source winget --accept-package-agreements --accept-source-agreements --silent
-          if (-not (Test-Path 'C:\Program Files\obs-studio\bin\64bit\obs.dll')) {
+          $obsDll = 'C:\Program Files\obs-studio\bin\64bit\obs.dll'
+          if (Test-Path $obsDll) {
+            Write-Host 'OBS Studio is already installed.'
+          } elseif (Get-Command choco -ErrorAction SilentlyContinue) {
+            choco install obs-studio --no-progress -y
+          } elseif (Get-Command winget -ErrorAction SilentlyContinue) {
+            winget install --id OBSProject.OBSStudio --exact --source winget --accept-package-agreements --accept-source-agreements --silent
+          } else {
+            $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/obsproject/obs-studio/releases/latest'
+            $asset = $release.assets | Where-Object { $_.name -match 'Windows.*Installer.*\.exe$' } | Select-Object -First 1
+            if (-not $asset) {
+              throw 'Could not find an OBS Studio Windows installer asset in the latest release.'
+            }
+
+            $installer = Join-Path $env:RUNNER_TEMP 'OBS-Studio-Installer.exe'
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installer
+            Start-Process -FilePath $installer -ArgumentList '/S' -Wait
+          }
+
+          if (-not (Test-Path $obsDll)) {
             throw 'obs.dll was not found after OBS Studio installation.'
           }
 
