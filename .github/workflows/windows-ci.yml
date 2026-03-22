@@ -49,15 +49,13 @@ jobs:
         run: cmake --build build-win-fallback-vs --config Release
 
       - name: Package release layout
-        run: .\package-release.ps1 -Configuration Release
+        run: .\package-release.ps1 -Configuration Release -NoZip
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v6
         with:
           name: MotionPngTuberPlayer-windows
-          path: |
-            dist/MotionPngTuberPlayer-windows
-            dist/MotionPngTuberPlayer-windows.zip
+          path: dist/MotionPngTuberPlayer-windows
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

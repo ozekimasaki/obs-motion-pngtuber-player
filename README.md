@@ -42,7 +42,9 @@ To create a distributable folder/zip locally, run:
 
 - `powershell -ExecutionPolicy Bypass -File .\\package-release.ps1`
 
-GitHub Actions now includes a Windows build workflow at `.github\\workflows\\windows-ci.yml` that installs OBS Studio, builds the fallback Windows target, packages the plugin layout, and uploads the package artifact.
+GitHub Actions now includes a Windows build workflow at `.github\\workflows\\windows-ci.yml` that installs OBS Studio, builds the fallback Windows target, packages the plugin layout, and uploads the extracted package directory as the workflow artifact.
+
+The local packaging script still produces `dist\\MotionPngTuberPlayer-windows.zip`, but the CI workflow intentionally uploads only the extracted folder so the downloadable Actions artifact does not become a zip containing another zip.
 
 The plugin now also has a built-in English/Japanese text fallback in the DLL. If OBS cannot load the external locale files, source and property labels fall back to readable built-in strings instead of raw keys such as `MotionPngTuberPlayer.SourceName`.
 
