@@ -4,6 +4,7 @@
 
 #include "motionpngtuber-native.h"
 #include "mpt-audio-backend.h"
+#include "mpt-image-backend.h"
 #include "mpt-text.h"
 
 #include <algorithm>
@@ -59,22 +60,6 @@ struct QuadFrame {
 	int y1 = 0;
 	bool valid = false;
 	bool warp_ready = false;
-};
-
-struct ImageBGRA {
-	uint32_t width = 0;
-	uint32_t height = 0;
-	std::vector<uint8_t> pixels;
-
-	bool empty() const
-	{
-		return pixels.empty() || width == 0 || height == 0;
-	}
-
-	size_t stride() const
-	{
-		return static_cast<size_t>(width) * 4U;
-	}
 };
 
 template<typename T>
@@ -720,7 +705,7 @@ public:
 	{
 		shutdown_audio();
 		safe_release(&reader_);
-		safe_release(&wic_factory_);
+		mpt_image_backend_destroy(image_backend_);
 		if (mf_started_)
 			MFShutdown();
 		if (co_initialized_)
@@ -744,9 +729,7 @@ public:
 		}
 		mf_started_ = true;
 
-		hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic_factory_));
-		if (FAILED(hr) || !wic_factory_) {
-			error = "failed to create WIC imaging factory";
+		if (!mpt_image_backend_create(&image_backend_, error)) {
 			return false;
 		}
 
@@ -961,64 +944,7 @@ private:
 
 	ImageBGRA load_sprite(const std::filesystem::path &path, std::string &error) const
 	{
-		if (!std::filesystem::exists(path)) {
-			error = std::string("missing mouth sprite: ") + path.u8string();
-			return ImageBGRA();
-		}
-
-		IWICBitmapDecoder *decoder = nullptr;
-		HRESULT hr = wic_factory_->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad,
-								      &decoder);
-		if (FAILED(hr) || !decoder) {
-			error = "failed to open PNG sprite";
-			return ImageBGRA();
-		}
-
-		IWICBitmapFrameDecode *frame = nullptr;
-		hr = decoder->GetFrame(0, &frame);
-		if (FAILED(hr) || !frame) {
-			safe_release(&decoder);
-			error = "failed to read PNG frame";
-			return ImageBGRA();
-		}
-
-		IWICFormatConverter *converter = nullptr;
-		hr = wic_factory_->CreateFormatConverter(&converter);
-		if (FAILED(hr) || !converter) {
-			safe_release(&frame);
-			safe_release(&decoder);
-			error = "failed to create PNG converter";
-			return ImageBGRA();
-		}
-
-		hr = converter->Initialize(frame, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0.0,
-					   WICBitmapPaletteTypeCustom);
-		if (FAILED(hr)) {
-			safe_release(&converter);
-			safe_release(&frame);
-			safe_release(&decoder);
-			error = "failed to convert PNG sprite to BGRA";
-			return ImageBGRA();
-		}
-
-		UINT width = 0;
-		UINT height = 0;
-		converter->GetSize(&width, &height);
-		ImageBGRA out;
-		out.width = width;
-		out.height = height;
-		out.pixels.resize((size_t)width * height * 4U);
-		hr = converter->CopyPixels(nullptr, width * 4U, (UINT)out.pixels.size(), out.pixels.data());
-
-		safe_release(&converter);
-		safe_release(&frame);
-		safe_release(&decoder);
-
-		if (FAILED(hr)) {
-			error = "failed to copy PNG pixels";
-			return ImageBGRA();
-		}
-		return out;
+		return mpt_image_backend_load_png_bgra(image_backend_, path, error);
 	}
 
 	ImageBGRA load_optional_sprite(const std::filesystem::path &path, const ImageBGRA &fallback) const
@@ -1311,7 +1237,7 @@ private:
 private:
 	bool co_initialized_ = false;
 	bool mf_started_ = false;
-	IWICImagingFactory *wic_factory_ = nullptr;
+	MptImageBackend *image_backend_ = nullptr;
 	IMFSourceReader *reader_ = nullptr;
 	ImageBGRA output_ {};
 	std::array<ImageBGRA, 5> sprites_ {};
