@@ -404,6 +404,7 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	const char *audio_device_identity = NULL;
 	const char *valid_policy = NULL;
 	long long render_fps = 0;
+	long long normalized_render_fps = 30;
 	long long audio_device_index = -1;
 	bool requires_runtime_rebuild = false;
 
@@ -417,6 +418,8 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	audio_device_identity = obs_data_get_string(settings, PROP_AUDIO_DEVICE_IDENTITY);
 	valid_policy = obs_data_get_string(settings, PROP_VALID_POLICY);
 	render_fps = obs_data_get_int(settings, PROP_RENDER_FPS);
+	if (render_fps > 0)
+		normalized_render_fps = render_fps;
 	audio_device_index = obs_data_get_int(settings, PROP_AUDIO_DEVICE_INDEX);
 
 	pthread_mutex_lock(&context->mutex);
@@ -426,6 +429,7 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 				   !strings_equal_nullable(context->track_calibrated_file, track_calibrated_file) ||
 				   !strings_equal_nullable(context->audio_device_identity_json, audio_device_identity) ||
 				   !strings_equal_nullable(context->valid_policy, valid_policy) ||
+				   context->render_fps != normalized_render_fps ||
 				   context->audio_device_index != audio_device_index;
 
 	replace_string(&context->loop_video, loop_video);
@@ -435,7 +439,7 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	replace_string(&context->audio_device_identity_json, audio_device_identity);
 	replace_string(&context->valid_policy, valid_policy);
 
-	context->render_fps = render_fps;
+	context->render_fps = normalized_render_fps;
 	context->audio_device_index = audio_device_index;
 	apply_runtime_defaults(context);
 	if (requires_runtime_rebuild)

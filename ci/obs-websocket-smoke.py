@@ -226,6 +226,14 @@ def is_nonblank(image: Image.Image) -> bool:
     return get_nonblank_bbox(image) is not None
 
 
+def get_image_difference_bbox(before: Image.Image, after: Image.Image) -> tuple[int, int, int, int] | None:
+    if before.size != after.size:
+        return (0, 0, max(before.width, after.width), max(before.height, after.height))
+
+    difference = ImageChops.difference(before.convert("RGBA"), after.convert("RGBA"))
+    return difference.getbbox()
+
+
 def capture_screenshot(
     client: ObsWebSocketClient,
     source_name: str,
@@ -261,6 +269,36 @@ def capture_screenshot(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         last_image.save(output_path)
     raise RuntimeError(f"Did not receive a nonblank screenshot for {source_name}")
+
+
+def capture_changed_screenshot(
+    client: ObsWebSocketClient,
+    source_name: str,
+    baseline_image: Image.Image,
+    output_path: Path,
+    timeout_seconds: float = 30.0,
+) -> Image.Image:
+    deadline = time.time() + timeout_seconds
+    last_image: Image.Image | None = None
+
+    while time.time() < deadline:
+        remaining_timeout = max(0.1, deadline - time.time())
+        current_image = capture_screenshot(
+            client,
+            source_name,
+            output_path,
+            timeout_seconds=min(5.0, remaining_timeout),
+        )
+        if get_image_difference_bbox(baseline_image, current_image) is not None:
+            return current_image
+
+        last_image = current_image
+        time.sleep(1.0)
+
+    if last_image is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        last_image.save(output_path)
+    raise AssertionError("crop filter should visibly change the rendered scene output")
 
 
 def assert_equal(actual: object, expected: object, description: str) -> None:
@@ -339,20 +377,17 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         assert_equal(int(filter_settings.get("top", 0)), crop.top, "crop_filter top")
         assert_equal(int(filter_settings.get("bottom", 0)), crop.bottom, "crop_filter bottom")
 
-        after_filter = capture_screenshot(client, args.scene_name, artifacts_dir / "after-filter.png")
+        # The smoke video is static, so the rendered scene should change as soon as the crop filter takes effect.
+        after_filter = capture_changed_screenshot(
+            client,
+            args.scene_name,
+            before_filter,
+            artifacts_dir / "after-filter.png",
+        )
         after_filter_extent = get_nonblank_extent(after_filter)
         assert_true(after_filter_extent is not None, "after-filter screenshot should contain visible content")
-        # OBS 30 source screenshots can keep the original canvas size, so compare the rendered scene output instead.
-        assert_true(
-            (
-                after_filter.width < before_filter.width and after_filter.height < before_filter.height
-            )
-            or (
-                after_filter_extent.width < before_filter_extent.width
-                and after_filter_extent.height < before_filter_extent.height
-            ),
-            "crop filter should reduce the rendered source size or visible content bounds",
-        )
+        difference_bbox = get_image_difference_bbox(before_filter, after_filter)
+        assert_true(difference_bbox is not None, "crop filter should visibly change the rendered scene output")
 
         client.request(
             "SetInputSettings",
@@ -376,6 +411,7 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
             "after_filter_size": list(after_filter.size),
             "before_filter_content_size": [before_filter_extent.width, before_filter_extent.height],
             "after_filter_content_size": [after_filter_extent.width, after_filter_extent.height],
+            "filter_difference_bbox": list(difference_bbox) if difference_bbox is not None else None,
             "audio_device_items": len(property_items),
         }
         (artifacts_dir / "summary-create.json").write_text(json.dumps(summary, indent=2), encoding="utf-8", newline="\n")
