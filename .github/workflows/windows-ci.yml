@@ -10,6 +10,7 @@ on:
   workflow_dispatch:
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   WINDOWS_PACKAGE_NAME: MotionPngTuberPlayer-obs-plugin-windows-x64
   LINUX_PACKAGE_NAME: MotionPngTuberPlayer-obs-plugin-linux-x64-stub
   MACOS_PACKAGE_NAME: MotionPngTuberPlayer-obs-plugin-macos-arm64-stub
@@ -115,8 +116,19 @@ jobs:
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: |
-          brew install cmake ninja pkgconf
-          brew install --cask obs
+          for formula in cmake ninja pkgconf; do
+            if brew list --formula "${formula}" >/dev/null 2>&1; then
+              echo "${formula} is already installed."
+            else
+              brew install "${formula}"
+            fi
+          done
+
+          if brew list --cask obs >/dev/null 2>&1; then
+            echo "obs is already installed."
+          else
+            brew install --cask obs
+          fi
 
       - name: Detect macOS libobs framework
         id: macos_obs
