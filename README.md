@@ -45,7 +45,7 @@ To create a distributable folder/zip locally, run:
 - `powershell -ExecutionPolicy Bypass -File .\\package-release.ps1 -PackageName MotionPngTuberPlayer-obs-plugin-windows-x64`
 - To build, tag, and create/update a GitHub release from the current checkout, run: `powershell -ExecutionPolicy Bypass -File .\\release-windows.ps1 -Tag v0.1.0 -PreRelease`
 
-GitHub Actions now includes a build workflow at `.github\\workflows\\windows-ci.yml` that builds the Windows release package, compiles the Linux and macOS stub plugins, and publishes all three assets on tag pushes.
+GitHub Actions now includes a build workflow at `.github\\workflows\\windows-ci.yml` that builds the Windows release package, compiles the Linux and macOS packages, and publishes all three assets on tag pushes.
 
 The release asset names are now more explicit:
 
@@ -69,24 +69,35 @@ The native-only Windows runtime currently uses:
 - Windows Imaging Component (WIC) for PNG sprite decode
 - WinMM / `waveIn` for per-source audio input capture
 
-## macOS / Linux stub build note
+The current non-Windows build path now shares the runtime core and uses:
 
-The repository now contains cross-platform backend stubs and a shared helper script at `ci/build-nonwindows-stub.sh`.
+- FFmpeg for loop video decode
+- `libpng` for PNG sprite decode
+- Windows-only audio capture for now, so Linux/macOS release assets remain labeled `-stub`
 
-Linux stub builds are expected to work with:
+## macOS / Linux build note
+
+The repository now contains a shared runtime core plus non-Windows media backends, with a shared helper script at `ci/build-nonwindows-stub.sh`.
+
+Linux builds are expected to work with:
 
 - `libobs-dev`
+- `libpng-dev`
+- `libavcodec-dev`
+- `libavformat-dev`
+- `libavutil-dev`
+- `libswscale-dev`
 - `pkg-config`
 - `cmake`
 - `ninja-build`
 
-macOS stub builds now have a GitHub Actions path too. The hosted `macos-14` runner installs `OBS.app`, locates the bundled `libobs` framework, and uses the repository's local fallback headers plus the app-bundled `libobs` binary to produce the macOS stub release asset.
+macOS builds now have a GitHub Actions path too. The hosted `macos-14` runner installs `OBS.app`, locates the bundled `libobs` framework, and installs Homebrew `ffmpeg` / `libpng` so the shared non-Windows media backends can compile.
 
-For local macOS stub builds, install `OBS.app` and point `MPT_MACOS_OBS_LIBRARY` at the bundled `libobs` binary, for example:
+For local macOS builds, install `OBS.app`, install `ffmpeg` and `libpng` via Homebrew, and point `MPT_MACOS_OBS_LIBRARY` at the bundled `libobs` binary, for example:
 
 - `MPT_MACOS_OBS_LIBRARY=/Applications/OBS.app/Contents/Frameworks/libobs.framework/libobs`
 
-The Homebrew cask `obs` is therefore enough for the current macOS stub build path.
+The release assets remain named `-stub` until non-Windows audio capture/device selection and OBS smoke tests are complete.
 
 ## Track note
 

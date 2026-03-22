@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -27,16 +28,12 @@
 
 #ifdef _WIN32
 #include <mmeapi.h>
-#include <winrt/Windows.Foundation.Collections.h>
-#include <winrt/Windows.Data.Json.h>
-#include <winrt/base.h>
+#include <objbase.h>
 #endif
 
 struct mpt_native_runtime {
 	void *impl;
 };
-
-#ifdef _WIN32
 
 namespace {
 
@@ -56,6 +53,7 @@ struct QuadFrame {
 	bool warp_ready = false;
 };
 
+#ifdef _WIN32
 static std::wstring utf8_to_wide(const char *text)
 {
 	if (!text || !*text)
@@ -71,21 +69,22 @@ static std::wstring utf8_to_wide(const char *text)
 		out.pop_back();
 	return out;
 }
+#endif
 
-static std::string wide_to_utf8(const wchar_t *text)
+static std::filesystem::path utf8_to_path(const char *text)
 {
 	if (!text || !*text)
-		return std::string();
+		return std::filesystem::path();
+#ifdef _WIN32
+	return std::filesystem::path(utf8_to_wide(text));
+#else
+	return std::filesystem::u8path(text);
+#endif
+}
 
-	int needed = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
-	if (needed <= 0)
-		return std::string();
-
-	std::string out(static_cast<size_t>(needed), '\0');
-	WideCharToMultiByte(CP_UTF8, 0, text, -1, out.data(), needed, nullptr, nullptr);
-	if (!out.empty() && out.back() == '\0')
-		out.pop_back();
-	return out;
+static std::filesystem::path utf8_to_path(const std::string &text)
+{
+	return utf8_to_path(text.c_str());
 }
 
 static std::string to_lower_ascii(std::string text)
@@ -103,7 +102,7 @@ static bool is_json_path(const char *path)
 {
 	if (!has_text(path))
 		return false;
-	std::filesystem::path fs_path(utf8_to_wide(path));
+	std::filesystem::path fs_path = utf8_to_path(path);
 	return to_lower_ascii(fs_path.extension().u8string()) == ".json";
 }
 
@@ -111,7 +110,7 @@ static bool is_npz_path(const char *path)
 {
 	if (!has_text(path))
 		return false;
-	std::filesystem::path fs_path(utf8_to_wide(path));
+	std::filesystem::path fs_path = utf8_to_path(path);
 	return to_lower_ascii(fs_path.extension().u8string()) == ".npz";
 }
 
@@ -119,7 +118,7 @@ static bool file_exists_utf8(const std::string &path)
 {
 	if (path.empty())
 		return false;
-	return std::filesystem::is_regular_file(std::filesystem::path(utf8_to_wide(path.c_str())));
+	return std::filesystem::is_regular_file(utf8_to_path(path));
 }
 
 static std::string resolve_track_json_candidate(const std::string &path)
@@ -131,14 +130,14 @@ static std::string resolve_track_json_candidate(const std::string &path)
 	if (!is_npz_path(path.c_str()))
 		return std::string();
 
-	std::filesystem::path base(utf8_to_wide(path.c_str()));
+	std::filesystem::path base = utf8_to_path(path);
 	std::vector<std::filesystem::path> candidates;
-	std::wstring stem = base.stem().wstring();
-	candidates.push_back(base.parent_path() / (stem + L".json"));
-	if (stem.find(L"_calibrated") != std::wstring::npos)
-		candidates.push_back(base.parent_path() / L"mouth_track.json");
-	if (stem != L"mouth_track")
-		candidates.push_back(base.parent_path() / L"mouth_track.json");
+	std::string stem = base.stem().u8string();
+	candidates.push_back(base.parent_path() / (stem + ".json"));
+	if (stem.find("_calibrated") != std::string::npos)
+		candidates.push_back(base.parent_path() / "mouth_track.json");
+	if (stem != "mouth_track")
+		candidates.push_back(base.parent_path() / "mouth_track.json");
 
 	for (const auto &candidate : candidates) {
 		if (std::filesystem::is_regular_file(candidate))
@@ -515,7 +514,7 @@ static void add_disabled_list_item(obs_property_t *list, const char *label)
 
 static bool read_text_file_utf8(const std::string &path, std::string &text)
 {
-	std::ifstream input(std::filesystem::path(utf8_to_wide(path.c_str())), std::ios::binary);
+	std::ifstream input(utf8_to_path(path), std::ios::binary);
 	if (!input)
 		return false;
 	std::ostringstream buffer;
@@ -524,63 +523,202 @@ static bool read_text_file_utf8(const std::string &path, std::string &text)
 	return true;
 }
 
-static bool json_object_try_get_number(const winrt::Windows::Data::Json::JsonObject &object, const wchar_t *name, double &out)
+static bool json_find_value_start(const std::string &json, const char *name, size_t &value_pos)
 {
-	if (!object.HasKey(name))
+	if (!name || !*name)
 		return false;
-	auto value = object.Lookup(name);
-	if (value.ValueType() != winrt::Windows::Data::Json::JsonValueType::Number)
+
+	bool in_string = false;
+	bool escaped = false;
+	size_t string_start = std::string::npos;
+	size_t name_len = std::strlen(name);
+	for (size_t idx = 0; idx < json.size(); ++idx) {
+		char ch = json[idx];
+		if (in_string) {
+			if (escaped) {
+				escaped = false;
+			} else if (ch == '\\') {
+				escaped = true;
+			} else if (ch == '"') {
+				size_t content_start = string_start + 1;
+				size_t content_len = idx - content_start;
+				if (content_len == name_len && json.compare(content_start, content_len, name) == 0) {
+					size_t pos = idx + 1;
+					while (pos < json.size() && std::isspace((unsigned char)json[pos]))
+						++pos;
+					if (pos < json.size() && json[pos] == ':') {
+						++pos;
+						while (pos < json.size() && std::isspace((unsigned char)json[pos]))
+							++pos;
+						value_pos = pos;
+						return true;
+					}
+				}
+				in_string = false;
+				string_start = std::string::npos;
+			}
+			continue;
+		}
+
+		if (ch == '"') {
+			in_string = true;
+			escaped = false;
+			string_start = idx;
+		}
+	}
+	return false;
+}
+
+static bool json_try_get_number(const std::string &json, const char *name, double &out)
+{
+	size_t value_pos = 0;
+	if (!json_find_value_start(json, name, value_pos))
 		return false;
-	out = value.GetNumber();
+
+	const char *start = json.c_str() + value_pos;
+	char *end = nullptr;
+	double value = std::strtod(start, &end);
+	if (start == end)
+		return false;
+	out = value;
 	return true;
 }
 
-static bool json_object_try_get_bool(const winrt::Windows::Data::Json::JsonObject &object, const wchar_t *name, bool &out)
+static bool json_try_get_bool(const std::string &json, const char *name, bool &out)
 {
-	if (!object.HasKey(name))
+	size_t value_pos = 0;
+	if (!json_find_value_start(json, name, value_pos))
 		return false;
-	auto value = object.Lookup(name);
-	if (value.ValueType() != winrt::Windows::Data::Json::JsonValueType::Boolean)
-		return false;
-	out = value.GetBoolean();
-	return true;
+	if (json.compare(value_pos, 4, "true") == 0) {
+		out = true;
+		return true;
+	}
+	if (json.compare(value_pos, 5, "false") == 0) {
+		out = false;
+		return true;
+	}
+	return false;
 }
 
-static bool json_object_try_get_array(const winrt::Windows::Data::Json::JsonObject &object, const wchar_t *name,
-				      winrt::Windows::Data::Json::JsonArray &out)
+static bool json_extract_bracketed_text(const std::string &json, size_t start_pos, char open_ch, char close_ch, std::string &out)
 {
-	if (!object.HasKey(name))
+	if (start_pos >= json.size() || json[start_pos] != open_ch)
 		return false;
-	auto value = object.Lookup(name);
-	if (value.ValueType() != winrt::Windows::Data::Json::JsonValueType::Array)
-		return false;
-	out = value.GetArray();
-	return true;
+
+	bool in_string = false;
+	bool escaped = false;
+	int depth = 0;
+	for (size_t idx = start_pos; idx < json.size(); ++idx) {
+		char ch = json[idx];
+		if (in_string) {
+			if (escaped) {
+				escaped = false;
+			} else if (ch == '\\') {
+				escaped = true;
+			} else if (ch == '"') {
+				in_string = false;
+			}
+			continue;
+		}
+
+		if (ch == '"') {
+			in_string = true;
+			continue;
+		}
+		if (ch == open_ch) {
+			++depth;
+		} else if (ch == close_ch) {
+			--depth;
+			if (depth == 0) {
+				out = json.substr(start_pos, idx - start_pos + 1);
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
-static bool json_array_try_get_number(const winrt::Windows::Data::Json::JsonArray &array, uint32_t index, double &out)
+static bool json_try_get_array_text(const std::string &json, const char *name, std::string &array_text)
 {
-	if (index >= array.Size())
+	size_t value_pos = 0;
+	if (!json_find_value_start(json, name, value_pos))
 		return false;
-	auto value = array.GetAt(index);
-	if (value.ValueType() != winrt::Windows::Data::Json::JsonValueType::Number)
-		return false;
-	out = value.GetNumber();
-	return true;
+	return json_extract_bracketed_text(json, value_pos, '[', ']', array_text);
 }
 
-static bool populate_quad_from_json_frame(const winrt::Windows::Data::Json::JsonObject &frame, float sx, float sy,
-					  QuadFrame &quad)
+static void json_collect_numbers(const std::string &json, std::vector<double> &numbers)
+{
+	numbers.clear();
+	size_t idx = 0;
+	while (idx < json.size()) {
+		unsigned char ch = (unsigned char)json[idx];
+		if (std::isdigit(ch) || ch == '-' || ch == '+' || ch == '.') {
+			char *end = nullptr;
+			double value = std::strtod(json.c_str() + idx, &end);
+			if (end && end != json.c_str() + idx) {
+				numbers.push_back(value);
+				idx = (size_t)(end - json.c_str());
+				continue;
+			}
+		}
+		++idx;
+	}
+}
+
+static bool json_split_top_level_objects(const std::string &array_text, std::vector<std::string> &objects)
+{
+	objects.clear();
+	if (array_text.empty() || array_text.front() != '[')
+		return false;
+
+	bool in_string = false;
+	bool escaped = false;
+	int object_depth = 0;
+	size_t object_start = std::string::npos;
+	for (size_t idx = 0; idx < array_text.size(); ++idx) {
+		char ch = array_text[idx];
+		if (in_string) {
+			if (escaped) {
+				escaped = false;
+			} else if (ch == '\\') {
+				escaped = true;
+			} else if (ch == '"') {
+				in_string = false;
+			}
+			continue;
+		}
+
+		if (ch == '"') {
+			in_string = true;
+			continue;
+		}
+		if (ch == '{') {
+			if (object_depth == 0)
+				object_start = idx;
+			++object_depth;
+		} else if (ch == '}') {
+			if (object_depth == 0)
+				return false;
+			--object_depth;
+			if (object_depth == 0 && object_start != std::string::npos) {
+				objects.push_back(array_text.substr(object_start, idx - object_start + 1));
+				object_start = std::string::npos;
+			}
+		}
+	}
+
+	return !objects.empty();
+}
+
+static bool populate_quad_from_json_frame(const std::string &frame_json, float sx, float sy, QuadFrame &quad)
 {
 	bool have_flat_keys = true;
 	for (int point = 0; point < 4; ++point) {
-		wchar_t key_x[8];
-		wchar_t key_y[8];
-		swprintf_s(key_x, L"x%d", point);
-		swprintf_s(key_y, L"y%d", point);
+		std::string key_x = "x" + std::to_string(point);
+		std::string key_y = "y" + std::to_string(point);
 		double x = 0.0;
 		double y = 0.0;
-		if (!json_object_try_get_number(frame, key_x, x) || !json_object_try_get_number(frame, key_y, y)) {
+		if (!json_try_get_number(frame_json, key_x.c_str(), x) || !json_try_get_number(frame_json, key_y.c_str(), y)) {
 			have_flat_keys = false;
 			break;
 		}
@@ -590,20 +728,18 @@ static bool populate_quad_from_json_frame(const winrt::Windows::Data::Json::Json
 	if (have_flat_keys)
 		return true;
 
-	winrt::Windows::Data::Json::JsonArray quad_points;
-	if (!json_object_try_get_array(frame, L"quad", quad_points) || quad_points.Size() < 4)
+	std::string quad_text;
+	if (!json_try_get_array_text(frame_json, "quad", quad_text))
 		return false;
-	for (uint32_t point = 0; point < 4; ++point) {
-		auto point_value = quad_points.GetAt(point);
-		if (point_value.ValueType() != winrt::Windows::Data::Json::JsonValueType::Array)
-			return false;
-		auto coords = point_value.GetArray();
-		double x = 0.0;
-		double y = 0.0;
-		if (!json_array_try_get_number(coords, 0, x) || !json_array_try_get_number(coords, 1, y))
-			return false;
-		quad.points[(size_t)point].x = (float)x * sx;
-		quad.points[(size_t)point].y = (float)y * sy;
+
+	std::vector<double> quad_values;
+	json_collect_numbers(quad_text, quad_values);
+	if (quad_values.size() != 8)
+		return false;
+
+	for (size_t point = 0; point < 4; ++point) {
+		quad.points[point].x = (float)quad_values[point * 2] * sx;
+		quad.points[point].y = (float)quad_values[point * 2 + 1] * sy;
 	}
 	return true;
 }
@@ -617,45 +753,35 @@ static bool load_track_frames_from_json(const std::string &path, uint32_t output
 		return false;
 	}
 
-	winrt::Windows::Data::Json::JsonObject root;
-	if (!winrt::Windows::Data::Json::JsonObject::TryParse(winrt::to_hstring(json_text), root)) {
-		error = "failed to parse track JSON";
-		return false;
-	}
-
 	double src_w = (double)output_width;
 	double src_h = (double)output_height;
-	json_object_try_get_number(root, L"width", src_w);
-	json_object_try_get_number(root, L"height", src_h);
+	json_try_get_number(json_text, "width", src_w);
+	json_try_get_number(json_text, "height", src_h);
 
-	winrt::Windows::Data::Json::JsonArray frames_json;
-	if (!json_object_try_get_array(root, L"frames", frames_json)) {
+	std::string frames_text;
+	if (!json_try_get_array_text(json_text, "frames", frames_text)) {
 		error = "track JSON does not contain frames";
 		return false;
 	}
 
-	if (frames_json.Size() == 0) {
+	std::vector<std::string> frame_objects;
+	if (!json_split_top_level_objects(frames_text, frame_objects)) {
 		error = "track JSON does not contain any frames";
 		return false;
 	}
 
 	frames_out.clear();
-	frames_out.reserve(frames_json.Size());
+	frames_out.reserve(frame_objects.size());
 	float sx = (float)output_width / (float)std::max(1.0, src_w);
 	float sy = (float)output_height / (float)std::max(1.0, src_h);
 	any_valid = false;
 
-	for (uint32_t idx = 0; idx < frames_json.Size(); ++idx) {
-		auto frame_value = frames_json.GetAt(idx);
-		if (frame_value.ValueType() != winrt::Windows::Data::Json::JsonValueType::Object)
-			continue;
-
-		auto frame_object = frame_value.GetObject();
+	for (const auto &frame_text : frame_objects) {
 		QuadFrame quad {};
 		bool valid = false;
-		if (json_object_try_get_bool(frame_object, L"valid", valid))
+		if (json_try_get_bool(frame_text, "valid", valid))
 			quad.valid = valid;
-		if (!populate_quad_from_json_frame(frame_object, sx, sy, quad))
+		if (!populate_quad_from_json_frame(frame_text, sx, sy, quad))
 			continue;
 		prepare_quad_frame(quad, output_width, output_height);
 
@@ -691,12 +817,15 @@ public:
 		shutdown_audio();
 		mpt_image_backend_destroy(image_backend_);
 		mpt_video_backend_destroy(video_backend_);
+#ifdef _WIN32
 		if (co_initialized_)
 			CoUninitialize();
+#endif
 	}
 
 	bool initialize(std::string &error)
 	{
+#ifdef _WIN32
 		HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 		if (SUCCEEDED(hr))
 			co_initialized_ = true;
@@ -704,6 +833,7 @@ public:
 			error = "CoInitializeEx failed";
 			return false;
 		}
+#endif
 
 		if (!mpt_image_backend_create(&image_backend_, error)) {
 			return false;
@@ -776,16 +906,16 @@ private:
 		if (dir.empty())
 			return false;
 
-		ImageBGRA open_image = load_sprite(dir / L"open.png", error);
+		ImageBGRA open_image = load_sprite(dir / "open.png", error);
 		if (open_image.empty())
 			return false;
 		open_image = crop_to_alpha(open_image, output_.width, output_.height);
 
-		sprites_[0] = load_optional_sprite(dir / L"closed.png", open_image);
-		sprites_[1] = load_optional_sprite(dir / L"half.png", open_image);
+		sprites_[0] = load_optional_sprite(dir / "closed.png", open_image);
+		sprites_[1] = load_optional_sprite(dir / "half.png", open_image);
 		sprites_[2] = open_image;
-		sprites_[3] = load_optional_sprite(dir / L"u.png", open_image);
-		sprites_[4] = load_optional_sprite(dir / L"e.png", open_image);
+		sprites_[3] = load_optional_sprite(dir / "u.png", open_image);
+		sprites_[4] = load_optional_sprite(dir / "e.png", open_image);
 		return true;
 	}
 
@@ -822,19 +952,19 @@ private:
 
 	std::filesystem::path resolve_sprite_directory(std::string &error) const
 	{
-		std::filesystem::path base(utf8_to_wide(mouth_dir_path_.c_str()));
+		std::filesystem::path base = utf8_to_path(mouth_dir_path_);
 		if (!std::filesystem::exists(base)) {
 			error = "mouth directory was not found";
 			return std::filesystem::path();
 		}
-		if (std::filesystem::is_regular_file(base / L"open.png"))
+		if (std::filesystem::is_regular_file(base / "open.png"))
 			return base;
 
 		std::vector<std::filesystem::path> candidates;
 		for (const auto &entry : std::filesystem::directory_iterator(base)) {
 			if (!entry.is_directory())
 				continue;
-			if (std::filesystem::is_regular_file(entry.path() / L"open.png"))
+			if (std::filesystem::is_regular_file(entry.path() / "open.png"))
 				candidates.push_back(entry.path());
 		}
 
@@ -876,13 +1006,13 @@ private:
 		}
 
 		const char *key = "open";
-		if (path.filename() == L"closed.png")
+		if (path.filename() == "closed.png")
 			key = "closed";
-		else if (path.filename() == L"half.png")
+		else if (path.filename() == "half.png")
 			key = "half";
-		else if (path.filename() == L"u.png")
+		else if (path.filename() == "u.png")
 			key = "u";
-		else if (path.filename() == L"e.png")
+		else if (path.filename() == "e.png")
 			key = "e";
 		return make_variant_from_open(fallback, key);
 	}
@@ -908,6 +1038,7 @@ private:
 
 	void initialize_audio()
 	{
+#ifdef _WIN32
 		UINT device_index = resolve_audio_device();
 		if (device_index == UINT_MAX)
 			return;
@@ -961,10 +1092,12 @@ private:
 				return;
 			shutdown_audio();
 		}
+#endif
 	}
 
 	void shutdown_audio()
 	{
+#ifdef _WIN32
 		HWAVEIN wave_in = wave_in_.exchange(nullptr);
 		if (!wave_in)
 			return;
@@ -975,8 +1108,10 @@ private:
 				waveInUnprepareHeader(wave_in, &header, sizeof(WAVEHDR));
 		}
 		waveInClose(wave_in);
+#endif
 	}
 
+#ifdef _WIN32
 	UINT resolve_audio_device() const
 	{
 		uint32_t device_index = 0;
@@ -1041,6 +1176,7 @@ private:
 
 		requeue_buffer(header);
 	}
+#endif
 
 	void update_mouth_state()
 	{
@@ -1116,11 +1252,13 @@ private:
 	std::string track_file_path_;
 	std::string track_calibrated_path_;
 	std::string audio_identity_json_;
+#ifdef _WIN32
 	std::atomic<HWAVEIN> wave_in_ {nullptr};
 	uint16_t audio_channels_ = 1;
 	uint32_t audio_sample_rate_ = 44100;
 	std::array<std::vector<int16_t>, 3> audio_storage_ {};
 	std::array<WAVEHDR, 3> audio_headers_ {};
+#endif
 	std::atomic<float> latest_rms_ {0.0f};
 	std::atomic<float> latest_zcr_ {0.0f};
 	float noise_floor_ = 0.0001f;
@@ -1215,55 +1353,3 @@ extern "C" void mpt_native_runtime_get_dimensions(struct mpt_native_runtime *run
 		return;
 	reinterpret_cast<NativeRuntime *>(runtime->impl)->get_dimensions(out_width, out_height);
 }
-
-#else
-
-extern "C" void mpt_native_populate_audio_devices(obs_property_t *list)
-{
-	if (!list)
-		return;
-	obs_property_list_clear(list);
-	size_t idx = obs_property_list_add_string(list, "Native runtime is only available on Windows.", "");
-	obs_property_list_item_disable(list, idx, true);
-}
-
-extern "C" bool mpt_native_runtime_create(struct mpt_native_runtime **out_runtime,
-					 const struct mpt_native_runtime_config *config, char **error_text)
-{
-	UNUSED_PARAMETER(out_runtime);
-	UNUSED_PARAMETER(config);
-	if (error_text)
-		*error_text = bstrdup("Native runtime is only implemented for Windows builds.");
-	return false;
-}
-
-extern "C" void mpt_native_runtime_destroy(struct mpt_native_runtime *runtime)
-{
-	UNUSED_PARAMETER(runtime);
-}
-
-extern "C" bool mpt_native_runtime_render_frame(struct mpt_native_runtime *runtime, uint8_t **out_bgra, size_t *out_size,
-						 uint32_t *out_width, uint32_t *out_height, uint32_t *out_stride,
-						 uint64_t *out_timestamp)
-{
-	UNUSED_PARAMETER(runtime);
-	UNUSED_PARAMETER(out_bgra);
-	UNUSED_PARAMETER(out_size);
-	UNUSED_PARAMETER(out_width);
-	UNUSED_PARAMETER(out_height);
-	UNUSED_PARAMETER(out_stride);
-	UNUSED_PARAMETER(out_timestamp);
-	return false;
-}
-
-extern "C" void mpt_native_runtime_get_dimensions(struct mpt_native_runtime *runtime, uint32_t *out_width,
-						   uint32_t *out_height)
-{
-	UNUSED_PARAMETER(runtime);
-	if (out_width)
-		*out_width = 0;
-	if (out_height)
-		*out_height = 0;
-}
-
-#endif

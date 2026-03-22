@@ -56,16 +56,24 @@
   - PNG sprite load を `mpt-image-backend.*` に切り出し始めた
   - loop video decode を `mpt-video-backend.*` に切り出し始めた
   - `ci\build-nonwindows-stub.sh` と `pkg-config libobs` fallback で Linux / macOS の stub build 導線を追加
-  - 今後の共通 core + OS backend 分離の最初の足場
+  - `motionpngtuber-native.cpp` の track / sprite / render 側を共通 runtime として non-Windows でも compile できる形へ寄せた
+  - non-Windows image backend に `libpng` 実装を追加
+  - non-Windows video backend に FFmpeg 実装を追加
+  - GitHub Actions の Linux / macOS build に `libpng` / FFmpeg 依存を追加
+  - 今後の audio backend / smoke test に進める段階
 
-### 現在の Windows 実装で使っているもの
+### 現在の backend 構成
 
 - Media Foundation
-  - loop 動画 decode
+  - Windows の loop 動画 decode
 - Windows Imaging Component (WIC)
-  - 口スプライト PNG decode
+  - Windows の口スプライト PNG decode
 - WinMM `waveIn`
-  - ソースごとの音声入力 capture
+  - Windows のソースごとの音声入力 capture
+- FFmpeg
+  - 現在の non-Windows loop 動画 decode
+- `libpng`
+  - 現在の non-Windows 口スプライト PNG decode
 
 ## 検証済み
 
@@ -87,8 +95,8 @@ portable OBS 32.0.4 で次を確認済みです。
 ## 既知の制約
 
 - 実機検証は **Windows が中心**
-- Linux は stub build / package / release 導線を追加し、tag release 連携も確認済みだが、実機 load / filter 検証は未完
-- macOS は stub build / package / release 導線を追加し、tag release 連携も確認済みだが、実機 load / filter 検証は未完
+- Linux は runtime core + media decode backend まで入ったが、audio capture / 実機 load / filter 検証は未完
+- macOS は runtime core + media decode backend まで入ったが、audio capture / 実機 load / filter 検証は未完
 - `.npz` は直接パースではなく、**sibling JSON がある前提の互換対応**
 - 通常インストール版 OBS (`C:\Program Files\obs-studio`) へ配置する場合は管理者権限が必要
 - DLL 内 fallback はあるが、配布物としては `data\obs-plugins\MotionPngTuberPlayer\locale\` 同梱を推奨
@@ -101,11 +109,10 @@ portable OBS 32.0.4 で次を確認済みです。
   - auto-fill
   - update / runtime rebuild 制御
 - `src\motionpngtuber-native.cpp`
-  - Windows native runtime 本体
-  - 動画 decode
+  - 共通 runtime core
   - track load
-  - 音声入力
   - mouth 合成
+  - Windows audio capture
 - `src\mpt-text.cpp`
   - locale 読み込み失敗時の英日埋め込み fallback
 - `data\locale\ja-JP.ini`
@@ -117,7 +124,7 @@ portable OBS 32.0.4 で次を確認済みです。
 - `release-windows.ps1`
   - Windows build + package + tag push + GitHub release 作成スクリプト
 - `.github\workflows\windows-ci.yml`
-  - Windows CI build / package と Linux stub build
+  - Windows / Linux / macOS CI build / package / release
 
 ## ビルドと配置
 
@@ -141,7 +148,8 @@ powershell -ExecutionPolicy Bypass -File .\install-to-obs.ps1 -ObsRoot .\obs-por
 
 ## 次に着手しやすい項目
 
-- macOS / Linux の実ビルド確認
+- macOS / Linux の OBS 実機 smoke test
+- non-Windows audio backend
 - signing / release automation
 - 追加の軽量化レビュー
   - warp / blend

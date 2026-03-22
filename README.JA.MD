@@ -22,13 +22,14 @@
   - 実機検証済み
   - 配布 asset あり
 - **Linux**
-  - stub build 導線あり
-  - GitHub Actions で stub build / package / release 可能
+  - build 導線あり
+  - GitHub Actions で build / package / release 可能
+  - 共有 runtime core + FFmpeg / libpng backend で media decode を持てる段階まで前進
   - ただし現時点では **stub package** 扱い
 - **macOS**
-  - stub build 導線あり
-  - backend 分離の土台あり
-  - GitHub Actions で OBS.app を入れて stub build / package / release まで回す構成
+  - build 導線あり
+  - backend 分離に加え、共有 runtime core + FFmpeg / libpng backend で media decode を持てる段階まで前進
+  - GitHub Actions で OBS.app を入れて build / package / release まで回す構成
   - 現時点では **stub package** 扱い
 
 ## Windows でのビルド
@@ -48,7 +49,7 @@ OBS へ配置:
 powershell -ExecutionPolicy Bypass -File .\install-to-obs.ps1
 ```
 
-## Linux / macOS の stub build
+## Linux / macOS の build
 
 共通 helper:
 
@@ -59,6 +60,11 @@ bash ./ci/build-nonwindows-stub.sh build-linux-stub
 Linux では次があれば流せます。
 
 - `libobs-dev`
+- `libpng-dev`
+- `libavcodec-dev`
+- `libavformat-dev`
+- `libavutil-dev`
+- `libswscale-dev`
 - `pkg-config`
 - `cmake`
 - `ninja-build`
@@ -67,18 +73,18 @@ Ubuntu 24.04 なら例えば:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y cmake ninja-build pkg-config libobs-dev
+sudo apt-get install -y cmake ninja-build pkg-config libobs-dev libpng-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
 bash ./ci/build-nonwindows-stub.sh build-linux-stub
 ```
 
-macOS は現在、**OBS.app に同梱される `libobs` バイナリを見せる前提** です。たとえば次を設定してください。
+macOS は現在、**OBS.app に同梱される `libobs` バイナリを見せる前提** で、加えて Homebrew の `ffmpeg` / `libpng` も使います。たとえば次を設定してください。
 
 - `MPT_MACOS_OBS_LIBRARY=/Applications/OBS.app/Contents/Frameworks/libobs.framework/libobs`
 
 補足:
 
 - 現在の macOS stub build は、repo 内 fallback header + `OBS.app` 同梱 `libobs` の組み合わせで回します。
-- そのため Homebrew cask の `obs` だけでも GitHub Actions / ローカル stub build 導線に使えます。
+- さらに non-Windows media backend のために `brew install ffmpeg libpng` を入れる前提です。
 
 ## パッケージ化
 
@@ -134,6 +140,6 @@ Windows からローカルで release まで一気に進める場合:
 ## 既知の制約
 
 - 現状の完成度は **Windows が最優先**
-- Linux / macOS は backend 分離と build 導線の段階
+- Linux / macOS は runtime core 共有化と media decode 実装までは進んだが、audio capture / 実機 smoke test は未完
 - `.npz` は直接 parse ではなく、sibling JSON 前提の互換対応
 - locale fallback はあるが、配布物では `data/obs-plugins/MotionPngTuberPlayer/locale/` 同梱推奨

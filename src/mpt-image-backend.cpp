@@ -4,6 +4,8 @@
 
 #ifdef _WIN32
 #include <wincodec.h>
+#else
+#include <png.h>
 #endif
 
 struct MptImageBackend {
@@ -55,8 +57,14 @@ bool mpt_image_backend_create(MptImageBackend **out_backend, std::string &error)
 	*out_backend = backend;
 	return true;
 #else
-	error = "image backend is only implemented for Windows builds";
-	return false;
+	auto *backend = new (std::nothrow) MptImageBackend();
+	if (!backend) {
+		error = "out of memory while creating image backend";
+		return false;
+	}
+
+	*out_backend = backend;
+	return true;
 #endif
 }
 
@@ -140,9 +148,35 @@ ImageBGRA mpt_image_backend_load_png_bgra(MptImageBackend *backend, const std::f
 
 	return out;
 #else
-	(void)backend;
-	(void)path;
-	error = "image backend is only implemented for Windows builds";
+	if (!backend) {
+		error = "image backend is not initialized";
+		return out;
+	}
+	if (!std::filesystem::exists(path)) {
+		error = std::string("missing mouth sprite: ") + path.u8string();
+		return out;
+	}
+
+	png_image image {};
+	image.version = PNG_IMAGE_VERSION;
+	std::string path_utf8 = path.u8string();
+	if (!png_image_begin_read_from_file(&image, path_utf8.c_str())) {
+		error = image.message[0] ? image.message : "failed to open PNG sprite";
+		png_image_free(&image);
+		return out;
+	}
+
+	image.format = PNG_FORMAT_BGRA;
+	out.width = image.width;
+	out.height = image.height;
+	out.pixels.resize(PNG_IMAGE_SIZE(image));
+	if (!png_image_finish_read(&image, nullptr, out.pixels.data(), 0, nullptr)) {
+		error = image.message[0] ? image.message : "failed to decode PNG sprite";
+		png_image_free(&image);
+		return ImageBGRA();
+	}
+
+	png_image_free(&image);
 	return out;
 #endif
 }
