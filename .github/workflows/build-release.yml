@@ -366,6 +366,7 @@ jobs:
           name: windows-smoke-artifacts
           path: |
             ${{ runner.temp }}\mpt-smoke-artifacts
+            ${{ runner.temp }}\obs-portable-smoke\config\obs-studio\global.ini
             ${{ runner.temp }}\obs-portable-smoke\config\obs-studio\plugin_config\obs-websocket
             ${{ runner.temp }}\obs-portable-smoke\config\obs-studio\logs
           if-no-files-found: warn
@@ -507,6 +508,7 @@ jobs:
           name: linux-smoke-artifacts
           path: |
             ${{ runner.temp }}/mpt-smoke-artifacts
+            ${{ runner.temp }}/obs-smoke-home/.config/obs-studio/global.ini
             ${{ runner.temp }}/obs-linux.stdout.log
             ${{ runner.temp }}/obs-smoke-home/.config/obs-studio/plugin_config/obs-websocket
             ${{ runner.temp }}/xvfb.log
@@ -649,6 +651,7 @@ jobs:
           name: macos-smoke-artifacts
           path: |
             ${{ runner.temp }}/mpt-smoke-artifacts
+            ${{ runner.temp }}/obs-smoke-home/Library/Application Support/obs-studio/global.ini
             ${{ runner.temp }}/obs-macos.stdout.log
             ${{ runner.temp }}/obs-smoke-home/Library/Application Support/obs-studio/plugin_config/obs-websocket
             ${{ runner.temp }}/obs-smoke-home/Library/Application Support/obs-studio/logs

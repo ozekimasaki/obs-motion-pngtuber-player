@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import json
 from pathlib import Path
 
@@ -11,6 +12,8 @@ CONFIG_SEARCH_PATTERNS = (
     "**/plugin_config/obs-websocket/config.json",
     "**/obs-websocket/config.json",
 )
+LEGACY_CONFIG_FILE_NAME = "global.ini"
+LEGACY_CONFIG_SECTION = "OBSWebSocket"
 
 
 def find_config_path(config_root: Path) -> Path:
@@ -39,6 +42,31 @@ def load_existing_config(config_path: Path) -> dict[str, object]:
     return data
 
 
+def update_legacy_global_config(config_root: Path, port: int, password: str) -> Path:
+    global_config_path = config_root / LEGACY_CONFIG_FILE_NAME
+    parser = configparser.ConfigParser()
+    parser.optionxform = str
+
+    if global_config_path.exists():
+        parser.read(global_config_path, encoding="utf-8")
+
+    if not parser.has_section(LEGACY_CONFIG_SECTION):
+        parser.add_section(LEGACY_CONFIG_SECTION)
+
+    parser.set(LEGACY_CONFIG_SECTION, "FirstLoad", "false")
+    parser.set(LEGACY_CONFIG_SECTION, "ServerEnabled", "true")
+    parser.set(LEGACY_CONFIG_SECTION, "ServerPort", str(port))
+    parser.set(LEGACY_CONFIG_SECTION, "AlertsEnabled", "false")
+    parser.set(LEGACY_CONFIG_SECTION, "AuthRequired", "false")
+    parser.set(LEGACY_CONFIG_SECTION, "ServerPassword", password)
+
+    global_config_path.parent.mkdir(parents=True, exist_ok=True)
+    with global_config_path.open("w", encoding="utf-8", newline="\n") as handle:
+        parser.write(handle)
+
+    return global_config_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Configure the OBS websocket server for smoke tests.")
     parser.add_argument("--config-root", required=True, help="OBS config root (for example obs-studio).")
@@ -62,7 +90,17 @@ def main() -> int:
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8", newline="\n")
-    print(json.dumps({"config_path": str(config_path), "server_port": args.port}, indent=2))
+    global_config_path = update_legacy_global_config(config_root, args.port, args.password)
+    print(
+        json.dumps(
+            {
+                "config_path": str(config_path),
+                "global_config_path": str(global_config_path),
+                "server_port": args.port,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
