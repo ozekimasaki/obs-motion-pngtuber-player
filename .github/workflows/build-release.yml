@@ -595,6 +595,10 @@ jobs:
             sleep 20
           }
 
+          request_quit_obs() {
+            osascript -e 'tell application id "com.obsproject.obs-studio" to quit' >/dev/null 2>&1 || true
+          }
+
           stop_obs() {
             if [[ ! -f "$OBS_PID_FILE" ]]; then
               return
@@ -606,7 +610,7 @@ jobs:
               return
             fi
 
-            kill -TERM "$obs_pid" 2>/dev/null || true
+            request_quit_obs
             for _ in $(seq 1 20); do
               if ! kill -0 "$obs_pid" 2>/dev/null; then
                 return
@@ -614,7 +618,21 @@ jobs:
               sleep 1
             done
 
+            kill -TERM "$obs_pid" 2>/dev/null || true
+            for _ in $(seq 1 10); do
+              if ! kill -0 "$obs_pid" 2>/dev/null; then
+                return
+              fi
+              sleep 1
+            done
+
             kill -KILL "$obs_pid" 2>/dev/null || true
+            for _ in $(seq 1 10); do
+              if ! kill -0 "$obs_pid" 2>/dev/null; then
+                return
+              fi
+              sleep 1
+            done
           }
 
           trap 'stop_obs || true' EXIT
@@ -655,6 +673,7 @@ jobs:
             ${{ runner.temp }}/obs-macos.stdout.log
             ${{ runner.temp }}/obs-smoke-home/Library/Application Support/obs-studio/plugin_config/obs-websocket
             ${{ runner.temp }}/obs-smoke-home/Library/Application Support/obs-studio/logs
+            ${{ runner.temp }}/obs-smoke-home/Library/Logs
           if-no-files-found: warn
           retention-days: 14
 

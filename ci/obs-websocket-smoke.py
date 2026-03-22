@@ -51,6 +51,12 @@ class CropSettings:
         }
 
 
+@dataclass(frozen=True)
+class ContentExtent:
+    width: int
+    height: int
+
+
 class ObsWebSocketClient:
     def __init__(self, url: str, password: str | None = None):
         self.url = url
@@ -201,10 +207,23 @@ def decode_image_data(image_data: str) -> Image.Image:
     return image
 
 
-def is_nonblank(image: Image.Image) -> bool:
+def get_nonblank_bbox(image: Image.Image) -> tuple[int, int, int, int] | None:
     rgb_image = image.convert("RGB")
     background = Image.new("RGB", rgb_image.size, rgb_image.getpixel((0, 0)))
-    return ImageChops.difference(rgb_image, background).getbbox() is not None
+    return ImageChops.difference(rgb_image, background).getbbox()
+
+
+def get_nonblank_extent(image: Image.Image) -> ContentExtent | None:
+    bbox = get_nonblank_bbox(image)
+    if bbox is None:
+        return None
+
+    left, top, right, bottom = bbox
+    return ContentExtent(width=right - left, height=bottom - top)
+
+
+def is_nonblank(image: Image.Image) -> bool:
+    return get_nonblank_bbox(image) is not None
 
 
 def capture_screenshot(
@@ -301,6 +320,8 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         assert_true(bool(property_items), "audio device list should contain at least one entry")
 
         before_filter = capture_screenshot(client, args.source_name, artifacts_dir / "before-filter.png")
+        before_filter_extent = get_nonblank_extent(before_filter)
+        assert_true(before_filter_extent is not None, "before-filter screenshot should contain visible content")
         client.request(
             "CreateSourceFilter",
             {
@@ -319,9 +340,18 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         assert_equal(int(filter_settings.get("bottom", 0)), crop.bottom, "crop_filter bottom")
 
         after_filter = capture_screenshot(client, args.source_name, artifacts_dir / "after-filter.png")
+        after_filter_extent = get_nonblank_extent(after_filter)
+        assert_true(after_filter_extent is not None, "after-filter screenshot should contain visible content")
+        # OBS 30 source screenshots can keep the original canvas size even when crop_filter trims the visible output.
         assert_true(
-            after_filter.width < before_filter.width and after_filter.height < before_filter.height,
-            "crop filter should reduce the rendered source size",
+            (
+                after_filter.width < before_filter.width and after_filter.height < before_filter.height
+            )
+            or (
+                after_filter_extent.width < before_filter_extent.width
+                and after_filter_extent.height < before_filter_extent.height
+            ),
+            "crop filter should reduce the rendered source size or visible content bounds",
         )
 
         client.request(
@@ -344,6 +374,8 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         summary = {
             "before_filter_size": list(before_filter.size),
             "after_filter_size": list(after_filter.size),
+            "before_filter_content_size": [before_filter_extent.width, before_filter_extent.height],
+            "after_filter_content_size": [after_filter_extent.width, after_filter_extent.height],
             "audio_device_items": len(property_items),
         }
         (artifacts_dir / "summary-create.json").write_text(json.dumps(summary, indent=2), encoding="utf-8", newline="\n")
