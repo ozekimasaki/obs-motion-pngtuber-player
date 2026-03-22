@@ -504,11 +504,6 @@ jobs:
                 xdotool key --window "$window_id" --clearmodifiers ctrl+s 2>/dev/null || true
                 sleep 2
                 xdotool key --window "$window_id" --clearmodifiers ctrl+q 2>/dev/null || true
-                sleep 1
-                if kill -0 "$obs_pid" 2>/dev/null; then
-                  xdotool key --window "$window_id" alt+F4 2>/dev/null || true
-                fi
-                xdotool windowclose "$window_id" 2>/dev/null || true
               fi
             done < <(find_obs_window_ids "$obs_pid")
           }

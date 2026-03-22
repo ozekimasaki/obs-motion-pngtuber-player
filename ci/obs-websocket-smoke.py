@@ -357,7 +357,7 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         ).get("propertyItems", [])
         assert_true(bool(property_items), "audio device list should contain at least one entry")
 
-        before_filter = capture_screenshot(client, args.scene_name, artifacts_dir / "before-filter.png")
+        before_filter = capture_screenshot(client, args.source_name, artifacts_dir / "before-filter.png")
         before_filter_extent = get_nonblank_extent(before_filter)
         assert_true(before_filter_extent is not None, "before-filter screenshot should contain visible content")
         client.request(
@@ -380,7 +380,7 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         # The smoke video is static, so the rendered scene should change as soon as the crop filter takes effect.
         after_filter = capture_changed_screenshot(
             client,
-            args.scene_name,
+            args.source_name,
             before_filter,
             artifacts_dir / "after-filter.png",
         )
