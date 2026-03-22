@@ -461,6 +461,12 @@ jobs:
             sleep 20
           }
 
+          find_obs_window_ids() {
+            xdotool search --onlyvisible --class obs 2>/dev/null || \
+              xdotool search --onlyvisible --name OBS 2>/dev/null || \
+              xdotool search --onlyvisible --pid "$1" 2>/dev/null || true
+          }
+
           request_quit_obs() {
             local obs_pid="$1"
             while read -r window_id; do
@@ -473,7 +479,7 @@ jobs:
                 fi
                 xdotool windowclose "$window_id" 2>/dev/null || true
               fi
-            done < <(xdotool search --onlyvisible --pid "$obs_pid" 2>/dev/null || true)
+            done < <(find_obs_window_ids "$obs_pid")
           }
 
           stop_obs() {
@@ -518,7 +524,9 @@ jobs:
 
           trap cleanup EXIT
 
-          "$PYTHON_BIN" ./ci/configure-obs-websocket.py --config-root "$OBS_CONFIG_ROOT" --port "$OBS_WEBSOCKET_PORT"
+          "$PYTHON_BIN" ./ci/configure-obs-websocket.py \
+            --config-root "$OBS_CONFIG_ROOT" \
+            --port "$OBS_WEBSOCKET_PORT"
 
           start_obs
           "$PYTHON_BIN" ./ci/obs-websocket-smoke.py \
@@ -720,7 +728,10 @@ jobs:
 
           trap 'stop_obs || true' EXIT
 
-          "$PYTHON_BIN" ./ci/configure-obs-websocket.py --config-root "$OBS_CONFIG_ROOT" --port "$OBS_WEBSOCKET_PORT"
+          "$PYTHON_BIN" ./ci/configure-obs-websocket.py \
+            --config-root "$OBS_CONFIG_ROOT" \
+            --port "$OBS_WEBSOCKET_PORT" \
+            --set-macos-permissions-dialog-shown
 
           start_obs
           "$PYTHON_BIN" ./ci/obs-websocket-smoke.py \

@@ -447,6 +447,27 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	pthread_mutex_unlock(&context->mutex);
 }
 
+static void motionpngtuber_save(void *data, obs_data_t *settings)
+{
+	struct motionpngtuber_source *context = data;
+	if (!context)
+		return;
+
+	pthread_mutex_lock(&context->mutex);
+	obs_data_set_string(settings, PROP_LOOP_VIDEO, context->loop_video ? context->loop_video : "");
+	obs_data_set_string(settings, PROP_MOUTH_DIR, context->mouth_dir ? context->mouth_dir : "");
+	obs_data_set_string(settings, PROP_TRACK_FILE, context->track_file ? context->track_file : "");
+	obs_data_set_string(settings, PROP_TRACK_CALIBRATED_FILE,
+			    context->track_calibrated_file ? context->track_calibrated_file : "");
+	obs_data_set_int(settings, PROP_RENDER_FPS, context->render_fps > 0 ? context->render_fps : 30);
+	obs_data_set_int(settings, PROP_AUDIO_DEVICE_INDEX, context->audio_device_index);
+	obs_data_set_string(settings, PROP_AUDIO_DEVICE_IDENTITY,
+			    context->audio_device_identity_json ? context->audio_device_identity_json : "");
+	obs_data_set_string(settings, PROP_VALID_POLICY,
+			    (context->valid_policy && *context->valid_policy) ? context->valid_policy : "hold");
+	pthread_mutex_unlock(&context->mutex);
+}
+
 static void motionpngtuber_defaults(obs_data_t *settings)
 {
 	obs_data_set_default_int(settings, PROP_RENDER_FPS, 30);
@@ -605,6 +626,7 @@ struct obs_source_info motionpngtuber_source_info = {
 	.create = motionpngtuber_create,
 	.destroy = motionpngtuber_destroy,
 	.update = motionpngtuber_update,
+	.save = motionpngtuber_save,
 	.get_defaults = motionpngtuber_defaults,
 	.get_properties = motionpngtuber_properties,
 	.show = motionpngtuber_show,

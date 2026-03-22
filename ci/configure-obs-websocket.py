@@ -48,7 +48,13 @@ def load_existing_config(config_path: Path) -> dict[str, object]:
     return data
 
 
-def update_legacy_global_config(config_root: Path, port: int, password: str) -> Path:
+def update_legacy_global_config(
+    config_root: Path,
+    port: int,
+    password: str,
+    *,
+    mark_macos_permissions_dialog_shown: bool = False,
+) -> Path:
     global_config_path = config_root / LEGACY_CONFIG_FILE_NAME
     parser = create_ini_parser()
 
@@ -65,6 +71,11 @@ def update_legacy_global_config(config_root: Path, port: int, password: str) -> 
     parser.set(LEGACY_CONFIG_SECTION, "AuthRequired", "false")
     parser.set(LEGACY_CONFIG_SECTION, "ServerPassword", password)
 
+    if mark_macos_permissions_dialog_shown:
+        if not parser.has_section("General"):
+            parser.add_section("General")
+        parser.set("General", "MacOSPermissionsDialogLastShown", "1")
+
     global_config_path.parent.mkdir(parents=True, exist_ok=True)
     with global_config_path.open("w", encoding="utf-8", newline="\n") as handle:
         parser.write(handle, space_around_delimiters=False)
@@ -77,6 +88,7 @@ def main() -> int:
     parser.add_argument("--config-root", required=True, help="OBS config root (for example obs-studio).")
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--password", default="unused")
+    parser.add_argument("--set-macos-permissions-dialog-shown", action="store_true")
     args = parser.parse_args()
 
     config_root = Path(args.config_root)
@@ -95,7 +107,12 @@ def main() -> int:
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8", newline="\n")
-    global_config_path = update_legacy_global_config(config_root, args.port, args.password)
+    global_config_path = update_legacy_global_config(
+        config_root,
+        args.port,
+        args.password,
+        mark_macos_permissions_dialog_shown=args.set_macos_permissions_dialog_shown,
+    )
     print(
         json.dumps(
             {
