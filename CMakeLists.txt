@@ -19,19 +19,67 @@ elseif(WIN32)
     message(FATAL_ERROR "Fallback build requires obs.dll at ${MPT_OBS_DLL}")
   endif()
 
-  file(GLOB MPT_MSVC_BIN_CANDIDATES
+  set(MPT_MSVC_BIN_CANDIDATES)
+  foreach(MPT_TOOL_PATH IN ITEMS "${CMAKE_AR}" "${CMAKE_C_COMPILER}" "${CMAKE_CXX_COMPILER}")
+    if(MPT_TOOL_PATH)
+      get_filename_component(MPT_TOOL_DIR "${MPT_TOOL_PATH}" DIRECTORY)
+      list(APPEND MPT_MSVC_BIN_CANDIDATES "${MPT_TOOL_DIR}")
+    endif()
+  endforeach()
+
+  if(DEFINED ENV{VCToolsInstallDir} AND NOT "$ENV{VCToolsInstallDir}" STREQUAL "")
+    file(TO_CMAKE_PATH "$ENV{VCToolsInstallDir}" MPT_VCTOOLS_INSTALL_DIR)
+    list(APPEND MPT_MSVC_BIN_CANDIDATES "${MPT_VCTOOLS_INSTALL_DIR}/bin/Hostx64/x64")
+  endif()
+
+  if(DEFINED ENV{VCINSTALLDIR} AND NOT "$ENV{VCINSTALLDIR}" STREQUAL "")
+    file(TO_CMAKE_PATH "$ENV{VCINSTALLDIR}" MPT_VCINSTALLDIR_C)
+    file(GLOB MPT_VCINSTALL_BIN_CANDIDATES "${MPT_VCINSTALLDIR_C}/Tools/MSVC/*/bin/Hostx64/x64")
+    list(APPEND MPT_MSVC_BIN_CANDIDATES ${MPT_VCINSTALL_BIN_CANDIDATES})
+  endif()
+
+  find_program(MPT_VSWHERE_EXE vswhere.exe
+    HINTS
+      "C:/Program Files (x86)/Microsoft Visual Studio/Installer"
+      "C:/Program Files/Microsoft Visual Studio/Installer"
+  )
+  if(MPT_VSWHERE_EXE)
+    execute_process(
+      COMMAND "${MPT_VSWHERE_EXE}" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+      OUTPUT_VARIABLE MPT_VS_INSTALL_PATH
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(MPT_VS_INSTALL_PATH)
+      file(TO_CMAKE_PATH "${MPT_VS_INSTALL_PATH}" MPT_VS_INSTALL_PATH_C)
+      file(GLOB MPT_VSWHERE_BIN_CANDIDATES "${MPT_VS_INSTALL_PATH_C}/VC/Tools/MSVC/*/bin/Hostx64/x64")
+      list(APPEND MPT_MSVC_BIN_CANDIDATES ${MPT_VSWHERE_BIN_CANDIDATES})
+    endif()
+  endif()
+
+  file(GLOB MPT_LAYOUT_BIN_CANDIDATES
     "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x64"
     "C:/Program Files/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x64"
+    "C:/Program Files (x86)/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/*/bin/Hostx64/x64"
+    "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/*/bin/Hostx64/x64"
+    "C:/Program Files (x86)/Microsoft Visual Studio/2022/Professional/VC/Tools/MSVC/*/bin/Hostx64/x64"
+    "C:/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/MSVC/*/bin/Hostx64/x64"
+    "C:/Program Files (x86)/Microsoft Visual Studio/2022/Enterprise/VC/Tools/MSVC/*/bin/Hostx64/x64"
+    "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/MSVC/*/bin/Hostx64/x64"
   )
+  list(APPEND MPT_MSVC_BIN_CANDIDATES ${MPT_LAYOUT_BIN_CANDIDATES})
+  list(REMOVE_DUPLICATES MPT_MSVC_BIN_CANDIDATES)
   list(SORT MPT_MSVC_BIN_CANDIDATES COMPARE NATURAL ORDER DESCENDING)
   list(LENGTH MPT_MSVC_BIN_CANDIDATES MPT_MSVC_BIN_COUNT)
   if(MPT_MSVC_BIN_COUNT EQUAL 0)
-    message(FATAL_ERROR "Fallback build requires Visual Studio Build Tools with dumpbin.exe and lib.exe")
+    message(FATAL_ERROR "Fallback build requires Visual Studio C++ tools with dumpbin.exe and lib.exe")
   endif()
-  list(GET MPT_MSVC_BIN_CANDIDATES 0 MPT_MSVC_BIN_DIR)
 
-  find_program(MPT_DUMPBIN_EXE dumpbin.exe HINTS "${MPT_MSVC_BIN_DIR}" NO_DEFAULT_PATH REQUIRED)
-  find_program(MPT_LIB_EXE lib.exe HINTS "${MPT_MSVC_BIN_DIR}" NO_DEFAULT_PATH REQUIRED)
+  if(CMAKE_AR MATCHES "([/\\\\]|^)lib\\.exe$")
+    set(MPT_LIB_EXE "${CMAKE_AR}")
+  else()
+    find_program(MPT_LIB_EXE lib.exe HINTS ${MPT_MSVC_BIN_CANDIDATES} REQUIRED)
+  endif()
+  find_program(MPT_DUMPBIN_EXE dumpbin.exe HINTS ${MPT_MSVC_BIN_CANDIDATES} REQUIRED)
 
   set(MPT_GENERATED_DEF "${CMAKE_CURRENT_BINARY_DIR}/obs.def")
   set(MPT_GENERATED_LIB "${CMAKE_CURRENT_BINARY_DIR}/obs.lib")
