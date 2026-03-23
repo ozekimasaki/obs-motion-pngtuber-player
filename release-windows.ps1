@@ -9,6 +9,68 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+function Invoke-NoProfileSelf {
+    param(
+        [hashtable]$BoundParameters
+    )
+
+    if ($env:MPT_NO_PROFILE_REEXEC -eq '1') {
+        return
+    }
+
+    $shellPath = if ($PSVersionTable.PSEdition -eq 'Core') {
+        Join-Path $PSHOME 'pwsh.exe'
+    } else {
+        Join-Path $PSHOME 'powershell.exe'
+    }
+
+    if (-not (Test-Path $shellPath)) {
+        return
+    }
+
+    $env:MPT_NO_PROFILE_REEXEC = '1'
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+    foreach ($entry in $BoundParameters.GetEnumerator()) {
+        $argList += "-$($entry.Key)"
+        if ($entry.Value -isnot [switch] -and $entry.Value -isnot [System.Management.Automation.SwitchParameter]) {
+            $argList += [string]$entry.Value
+            continue
+        }
+        if (-not [bool]$entry.Value) {
+            $argList = $argList[0..($argList.Count - 2)]
+        }
+    }
+
+    & $shellPath @argList
+    exit $LASTEXITCODE
+}
+
+Invoke-NoProfileSelf -BoundParameters $PSBoundParameters
+
+function Test-ReleaseExists {
+    param(
+        [string]$GhPath,
+        [string]$TagName
+    )
+
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    try {
+        $process = Start-Process `
+            -FilePath $GhPath `
+            -ArgumentList @('release', 'view', $TagName) `
+            -Wait `
+            -PassThru `
+            -NoNewWindow `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath
+        return $process.ExitCode -eq 0
+    } finally {
+        Remove-Item $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+}
 
 function Get-CMakePath {
     $cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
@@ -51,6 +113,9 @@ if (-not $SkipBuild) {
 
 & $packageScript -Configuration $Configuration -PackageName $packageName
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if (-not (Test-Path $zipPath)) {
+    throw "Expected package archive was not created: $zipPath"
+}
 
 $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -Path $hashPath -Value "$hash  $packageName.zip" -Encoding ascii
@@ -58,6 +123,7 @@ Set-Content -Path $hashPath -Value "$hash  $packageName.zip" -Encoding ascii
 git rev-parse -q --verify "refs/tags/$Tag" *> $null
 if ($LASTEXITCODE -ne 0) {
     git tag -a $Tag -m "MotionPngTuberPlayer $Tag"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 git push origin $Tag
@@ -67,8 +133,7 @@ $releaseNotes = 'Windows x64 package release.'
 $assetZip = "$zipPath#MotionPngTuberPlayer Windows x64 package"
 $assetHash = "$hashPath#SHA256 checksum"
 
-& $ghCommand.Source release view $Tag *> $null
-if ($LASTEXITCODE -eq 0) {
+if (Test-ReleaseExists -GhPath $ghCommand.Source -TagName $Tag) {
     & $ghCommand.Source release upload $Tag $assetZip $assetHash --clobber
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } else {

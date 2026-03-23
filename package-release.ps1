@@ -11,6 +11,45 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+function Invoke-NoProfileSelf {
+    param(
+        [hashtable]$BoundParameters
+    )
+
+    if ($env:MPT_NO_PROFILE_REEXEC -eq '1') {
+        return
+    }
+
+    $shellPath = if ($PSVersionTable.PSEdition -eq 'Core') {
+        Join-Path $PSHOME 'pwsh.exe'
+    } else {
+        Join-Path $PSHOME 'powershell.exe'
+    }
+
+    if (-not (Test-Path $shellPath)) {
+        return
+    }
+
+    $env:MPT_NO_PROFILE_REEXEC = '1'
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+    foreach ($entry in $BoundParameters.GetEnumerator()) {
+        $argList += "-$($entry.Key)"
+        if ($entry.Value -isnot [switch] -and $entry.Value -isnot [System.Management.Automation.SwitchParameter]) {
+            $argList += [string]$entry.Value
+            continue
+        }
+        if (-not [bool]$entry.Value) {
+            $argList = $argList[0..($argList.Count - 2)]
+        }
+    }
+
+    & $shellPath @argList
+    exit $LASTEXITCODE
+}
+
+Invoke-NoProfileSelf -BoundParameters $PSBoundParameters
 
 function Test-IsWindows {
     return $env:OS -eq 'Windows_NT'
@@ -82,6 +121,9 @@ if (Test-Path $zipPath) {
 
 if (-not $NoZip) {
     Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $zipPath -CompressionLevel Optimal
+    if (-not (Test-Path $zipPath)) {
+        throw "Expected package archive was not created: $zipPath"
+    }
 }
 
 Write-Host "Packaged MotionPngTuberPlayer to $packageRoot"
