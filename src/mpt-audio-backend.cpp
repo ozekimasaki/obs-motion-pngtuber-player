@@ -2,25 +2,16 @@
 
 #include "motionpngtuber-native.h"
 
-#include <algorithm>
 #include <array>
 #include <cstring>
-#include <mutex>
 #include <new>
 #include <string>
 #include <utility>
 #include <vector>
 
-#ifdef _WIN32
 #include <mmeapi.h>
-#else
-extern "C" {
-#include <portaudio.h>
-}
-#endif
 
 struct MptAudioCapture {
-#ifdef _WIN32
 	HWAVEIN wave_in = nullptr;
 	uint16_t channels = 1;
 	uint32_t sample_rate = 44100;
@@ -28,13 +19,6 @@ struct MptAudioCapture {
 	void *userdata = nullptr;
 	std::array<std::vector<int16_t>, 3> storage {};
 	std::array<WAVEHDR, 3> headers {};
-#else
-	PaStream *stream = nullptr;
-	uint16_t channels = 1;
-	uint32_t sample_rate = 44100;
-	MptAudioInputCallback callback = nullptr;
-	void *userdata = nullptr;
-#endif
 };
 
 namespace {
@@ -67,8 +51,6 @@ static std::string build_identity_json(uint32_t index, const std::string &name, 
 	obs_data_release(identity);
 	return out;
 }
-
-#ifdef _WIN32
 
 static std::string wide_to_utf8(const wchar_t *text)
 {
@@ -130,129 +112,6 @@ static void CALLBACK wave_in_callback(HWAVEIN hwi, UINT msg, DWORD_PTR instance,
 	requeue_buffer(header);
 }
 
-#else
-
-static std::mutex g_portaudio_mutex;
-static size_t g_portaudio_refcount = 0;
-
-static std::string portaudio_error_string(PaError error_code)
-{
-	const char *text = Pa_GetErrorText(error_code);
-	return text && *text ? std::string(text) : std::string("PortAudio error");
-}
-
-static bool portaudio_acquire(std::string &error)
-{
-	std::lock_guard<std::mutex> lock(g_portaudio_mutex);
-	if (g_portaudio_refcount == 0) {
-		PaError err = Pa_Initialize();
-		if (err != paNoError) {
-			error = portaudio_error_string(err);
-			return false;
-		}
-	}
-	++g_portaudio_refcount;
-	return true;
-}
-
-static void portaudio_release()
-{
-	std::lock_guard<std::mutex> lock(g_portaudio_mutex);
-	if (g_portaudio_refcount == 0)
-		return;
-	--g_portaudio_refcount;
-	if (g_portaudio_refcount == 0)
-		Pa_Terminate();
-}
-
-static bool get_portaudio_device_details(PaDeviceIndex index, std::string &name_out, std::string &host_api_out)
-{
-	const PaDeviceInfo *device_info = Pa_GetDeviceInfo(index);
-	if (!device_info || device_info->maxInputChannels <= 0)
-		return false;
-
-	name_out = device_info->name ? device_info->name : "";
-	const PaHostApiInfo *host_api_info = Pa_GetHostApiInfo(device_info->hostApi);
-	host_api_out = host_api_info && host_api_info->name ? host_api_info->name : "";
-	return true;
-}
-
-static bool resolve_portaudio_input_device(const std::string &desired_name, const std::string &desired_host_api,
-					   long long desired_index, long long fallback_index, uint32_t *out_index)
-{
-	if (out_index)
-		*out_index = 0;
-
-	PaDeviceIndex count = Pa_GetDeviceCount();
-	if (count <= 0)
-		return false;
-
-	auto matches = [&](PaDeviceIndex idx) -> bool {
-		std::string name;
-		std::string host_api;
-		if (!get_portaudio_device_details(idx, name, host_api))
-			return false;
-		if (!desired_name.empty() && name != desired_name)
-			return false;
-		if (!desired_host_api.empty() && host_api != desired_host_api)
-			return false;
-		return true;
-	};
-
-	if (!desired_name.empty()) {
-		for (PaDeviceIndex idx = 0; idx < count; ++idx) {
-			if (!matches(idx))
-				continue;
-			if (out_index)
-				*out_index = static_cast<uint32_t>(idx);
-			return true;
-		}
-	}
-
-	if (desired_index >= 0 && desired_index < static_cast<long long>(count) && matches(static_cast<PaDeviceIndex>(desired_index))) {
-		if (out_index)
-			*out_index = static_cast<uint32_t>(desired_index);
-		return true;
-	}
-
-	if (fallback_index >= 0 && fallback_index < static_cast<long long>(count) && matches(static_cast<PaDeviceIndex>(fallback_index))) {
-		if (out_index)
-			*out_index = static_cast<uint32_t>(fallback_index);
-		return true;
-	}
-
-	for (PaDeviceIndex idx = 0; idx < count; ++idx) {
-		std::string name;
-		std::string host_api;
-		if (!get_portaudio_device_details(idx, name, host_api))
-			continue;
-		if (out_index)
-			*out_index = static_cast<uint32_t>(idx);
-		return true;
-	}
-
-	return false;
-}
-
-static int portaudio_input_callback(const void *input, void *output, unsigned long frame_count,
-				    const PaStreamCallbackTimeInfo *time_info, PaStreamCallbackFlags status_flags, void *user_data)
-{
-	UNUSED_PARAMETER(output);
-	UNUSED_PARAMETER(time_info);
-	UNUSED_PARAMETER(status_flags);
-
-	auto *capture = reinterpret_cast<MptAudioCapture *>(user_data);
-	if (!capture || !capture->callback || !input)
-		return paContinue;
-
-	size_t sample_count = static_cast<size_t>(frame_count) * capture->channels;
-	capture->callback(reinterpret_cast<const int16_t *>(input), sample_count, capture->channels, capture->sample_rate,
-			 capture->userdata);
-	return paContinue;
-}
-
-#endif
-
 static bool parse_identity_json(const std::string &identity_json, std::string &name_out, std::string &host_api_out,
 				long long &index_out)
 {
@@ -283,7 +142,6 @@ std::vector<MptAudioInputDevice> mpt_audio_backend_enumerate_input_devices()
 {
 	std::vector<MptAudioInputDevice> devices;
 
-#ifdef _WIN32
 	UINT count = waveInGetNumDevs();
 	devices.reserve(static_cast<size_t>(count));
 	for (UINT idx = 0; idx < count; ++idx) {
@@ -299,32 +157,6 @@ std::vector<MptAudioInputDevice> mpt_audio_backend_enumerate_input_devices()
 		device.identity_json = build_identity_json(device.index, device.name, device.host_api.c_str());
 		devices.push_back(std::move(device));
 	}
-#else
-	std::string error;
-	if (!portaudio_acquire(error))
-		return devices;
-
-	PaDeviceIndex count = Pa_GetDeviceCount();
-	if (count > 0)
-		devices.reserve(static_cast<size_t>(count));
-
-	for (PaDeviceIndex idx = 0; idx < count; ++idx) {
-		std::string name;
-		std::string host_api;
-		if (!get_portaudio_device_details(idx, name, host_api))
-			continue;
-
-		MptAudioInputDevice device;
-		device.index = static_cast<uint32_t>(idx);
-		device.name = std::move(name);
-		device.host_api = std::move(host_api);
-		device.label = std::to_string(device.index) + " " + device.name + " [" + device.host_api + "]";
-		device.identity_json = build_identity_json(device.index, device.name, device.host_api.c_str());
-		devices.push_back(std::move(device));
-	}
-
-	portaudio_release();
-#endif
 
 	return devices;
 }
@@ -339,7 +171,6 @@ bool mpt_audio_backend_resolve_input_device(const std::string &identity_json, lo
 	long long desired_index = -1;
 	parse_identity_json(identity_json, desired_name, desired_host_api, desired_index);
 
-#ifdef _WIN32
 	UINT count = waveInGetNumDevs();
 	if (count == 0)
 		return false;
@@ -372,14 +203,6 @@ bool mpt_audio_backend_resolve_input_device(const std::string &identity_json, lo
 	if (out_index)
 		*out_index = 0;
 	return true;
-#else
-	std::string error;
-	if (!portaudio_acquire(error))
-		return false;
-	bool resolved = resolve_portaudio_input_device(desired_name, desired_host_api, desired_index, fallback_index, out_index);
-	portaudio_release();
-	return resolved;
-#endif
 }
 
 bool mpt_audio_backend_start_input_capture(const std::string &identity_json, long long fallback_index, MptAudioInputCallback callback,
@@ -396,7 +219,6 @@ bool mpt_audio_backend_start_input_capture(const std::string &identity_json, lon
 		return false;
 	}
 
-#ifdef _WIN32
 	auto *capture = new (std::nothrow) MptAudioCapture();
 	if (!capture) {
 		error = "out of memory while creating audio capture";
@@ -464,85 +286,6 @@ bool mpt_audio_backend_start_input_capture(const std::string &identity_json, lon
 	delete capture;
 	error = "failed to start WinMM audio capture";
 	return false;
-#else
-	std::string acquire_error;
-	if (!portaudio_acquire(acquire_error)) {
-		error = std::move(acquire_error);
-		return false;
-	}
-
-	auto *capture = new (std::nothrow) MptAudioCapture();
-	if (!capture) {
-		portaudio_release();
-		error = "out of memory while creating audio capture";
-		return false;
-	}
-
-	std::string desired_name;
-	std::string desired_host_api;
-	long long desired_index = -1;
-	parse_identity_json(identity_json, desired_name, desired_host_api, desired_index);
-
-	uint32_t device_index = 0;
-	if (!resolve_portaudio_input_device(desired_name, desired_host_api, desired_index, fallback_index, &device_index)) {
-		delete capture;
-		portaudio_release();
-		error = "failed to resolve audio input device";
-		return false;
-	}
-
-	const PaDeviceInfo *device_info = Pa_GetDeviceInfo(static_cast<PaDeviceIndex>(device_index));
-	if (!device_info || device_info->maxInputChannels <= 0) {
-		delete capture;
-		portaudio_release();
-		error = "resolved audio device is not a valid input device";
-		return false;
-	}
-
-	capture->callback = callback;
-	capture->userdata = userdata;
-
-	for (const auto &candidate : k_audio_format_candidates) {
-		int input_channels = std::min<int>(candidate.channels, device_info->maxInputChannels);
-		if (input_channels <= 0)
-			continue;
-
-		PaStreamParameters input_parameters {};
-		input_parameters.device = static_cast<PaDeviceIndex>(device_index);
-		input_parameters.channelCount = input_channels;
-		input_parameters.sampleFormat = paInt16;
-		input_parameters.suggestedLatency =
-			device_info->defaultLowInputLatency > 0.0 ? device_info->defaultLowInputLatency : device_info->defaultHighInputLatency;
-		input_parameters.hostApiSpecificStreamInfo = nullptr;
-
-		PaError err = Pa_IsFormatSupported(&input_parameters, nullptr, static_cast<double>(candidate.sample_rate));
-		if (err != paFormatIsSupported)
-			continue;
-
-		err = Pa_OpenStream(&capture->stream, &input_parameters, nullptr, static_cast<double>(candidate.sample_rate), 256,
-				    paNoFlag, &portaudio_input_callback, capture);
-		if (err != paNoError) {
-			capture->stream = nullptr;
-			continue;
-		}
-
-		capture->channels = static_cast<uint16_t>(input_channels);
-		capture->sample_rate = candidate.sample_rate;
-		err = Pa_StartStream(capture->stream);
-		if (err == paNoError) {
-			*out_capture = capture;
-			return true;
-		}
-
-		Pa_CloseStream(capture->stream);
-		capture->stream = nullptr;
-	}
-
-	delete capture;
-	portaudio_release();
-	error = "failed to start PortAudio input capture";
-	return false;
-#endif
 }
 
 void mpt_audio_backend_stop_input_capture(MptAudioCapture *capture)
@@ -550,7 +293,6 @@ void mpt_audio_backend_stop_input_capture(MptAudioCapture *capture)
 	if (!capture)
 		return;
 
-#ifdef _WIN32
 	if (capture->wave_in) {
 		waveInStop(capture->wave_in);
 		waveInReset(capture->wave_in);
@@ -561,13 +303,6 @@ void mpt_audio_backend_stop_input_capture(MptAudioCapture *capture)
 		waveInClose(capture->wave_in);
 		capture->wave_in = nullptr;
 	}
-#else
-	if (capture->stream) {
-		Pa_CloseStream(capture->stream);
-		capture->stream = nullptr;
-	}
-	portaudio_release();
-#endif
 
 	delete capture;
 }

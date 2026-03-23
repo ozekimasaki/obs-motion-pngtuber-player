@@ -87,7 +87,9 @@ For most users, the default setting is the best place to start.
 - `.json` track files
 - `.npz` track files
 
-If you use `.npz`, a sibling `mouth_track.json` must exist in the same folder.
+Standard `.npz` track archives are read directly.
+
+If your `.npz` uses an unsupported ZIP variant, keep a sibling `mouth_track.json` in the same folder as a fallback.
 
 ## Troubleshooting
 

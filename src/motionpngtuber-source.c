@@ -18,11 +18,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#ifdef _WIN32
 #include <windows.h>
-#else
-#include <sys/stat.h>
-#endif
 
 #include "motionpngtuber-native.h"
 #include "mpt-text.h"
@@ -51,9 +47,6 @@ struct motionpngtuber_source {
 	pthread_mutex_t mutex;
 	bool thread_started;
 	bool active;
-#ifdef __APPLE__
-	bool keep_rendering_when_hidden;
-#endif
 	bool runtime_ready;
 	bool runtime_dirty;
 
@@ -116,14 +109,9 @@ static bool path_has_separator(char ch)
 
 static char preferred_path_separator(void)
 {
-#ifdef _WIN32
 	return '\\';
-#else
-	return '/';
-#endif
 }
 
-#ifdef _WIN32
 static wchar_t *utf8_to_wide_dup(const char *text)
 {
 	if (!has_text(text))
@@ -143,23 +131,17 @@ static wchar_t *utf8_to_wide_dup(const char *text)
 	}
 	return wide;
 }
-#endif
 
 static bool path_is_directory(const char *path)
 {
 	if (!has_text(path))
 		return false;
-#ifdef _WIN32
 	wchar_t *path_w = utf8_to_wide_dup(path);
 	if (!path_w)
 		return false;
 	DWORD attrs = GetFileAttributesW(path_w);
 	bfree(path_w);
 	return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
-#else
-	struct stat st;
-	return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
-#endif
 }
 
 static bool extract_parent_directory(const char *path, struct dstr *out)
@@ -465,17 +447,7 @@ static void *motionpngtuber_video_thread(void *data)
 			frame_interval_ns = 1000000000ULL / (uint64_t)context->render_fps;
 
 		motionpngtuber_rebuild_runtime_locked(context);
-		bool should_render = false;
-#ifdef __APPLE__
-		/*
-		 * macOS CI can request this explicitly so scene/source screenshots keep
-		 * receiving frames even when OBS does not drive show/hide callbacks.
-		 */
-		should_render = context->runtime != NULL &&
-				(context->active || context->keep_rendering_when_hidden);
-#else
-		should_render = context->active && context->runtime != NULL;
-#endif
+		bool should_render = context->active && context->runtime != NULL;
 		if (should_render) {
 			uint8_t *native_frame = NULL;
 			size_t native_size = 0;
@@ -784,13 +756,6 @@ static void *motionpngtuber_create(obs_data_t *settings, obs_source_t *source)
 	context->source = source;
 	context->active = true;
 	context->runtime_dirty = true;
-#ifdef __APPLE__
-	{
-		const char *keep_rendering = getenv("MPT_CI_KEEP_RENDERING");
-		context->keep_rendering_when_hidden =
-			keep_rendering && *keep_rendering && strcmp(keep_rendering, "0") != 0;
-	}
-#endif
 
 	if (pthread_mutex_init(&context->mutex, NULL) != 0) {
 		bfree(context);

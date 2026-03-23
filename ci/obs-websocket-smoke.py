@@ -527,7 +527,8 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
     loop_video = asset_root / "loop.mp4"
     mouth_dir = asset_root / "mouth"
     control_image = mouth_dir / "open.png"
-    track_file = asset_root / "mouth_track.json"
+    auto_filled_track_file = asset_root / "mouth_track.json"
+    track_file = asset_root / "mouth_track.npz"
     crop = CropSettings()
 
     client = ObsWebSocketClient(args.url, args.password)
@@ -563,11 +564,29 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         input_settings = get_input_settings(client, args.source_name)
         assert_equal(normalize_path(str(loop_video)), normalize_path(str(input_settings.get("loop_video", ""))), "loop_video")
         assert_equal(normalize_path(str(mouth_dir)), normalize_path(str(input_settings.get("mouth_dir", ""))), "mouth_dir auto-fill")
-        assert_equal(normalize_path(str(track_file)), normalize_path(str(input_settings.get("track_file", ""))), "track_file auto-fill")
+        assert_equal(
+            normalize_path(str(auto_filled_track_file)),
+            normalize_path(str(input_settings.get("track_file", ""))),
+            "track_file auto-fill",
+        )
         assert_equal(int(input_settings.get("render_fps", 0)), 18, "initial render_fps")
         source_activity = get_source_activity_state(client, args.source_name)
         scene_activity = get_source_activity_state(client, args.scene_name)
         skip_visual_verification = should_skip_visual_verification(visual_verification_supported)
+
+        client.request(
+            "SetInputSettings",
+            {
+                "inputName": args.source_name,
+                "inputSettings": {
+                    "track_file": str(track_file),
+                },
+                "overlay": True,
+            },
+        )
+        time.sleep(1.0)
+        input_settings = get_input_settings(client, args.source_name)
+        assert_equal(normalize_path(str(track_file)), normalize_path(str(input_settings.get("track_file", ""))), "track_file npz")
 
         property_items = client.request(
             "GetInputPropertiesListPropertyItems",
@@ -686,7 +705,7 @@ def run_reopen_phase(args: argparse.Namespace) -> dict[str, object]:
     loop_video = asset_root / "loop.mp4"
     mouth_dir = asset_root / "mouth"
     control_image = mouth_dir / "open.png"
-    track_file = asset_root / "mouth_track.json"
+    track_file = asset_root / "mouth_track.npz"
     crop = CropSettings()
 
     client = ObsWebSocketClient(args.url, args.password)

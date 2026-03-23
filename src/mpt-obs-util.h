@@ -12,11 +12,7 @@
 extern "C" {
 #endif
 
-#ifdef _WIN32
 #include <windows.h>
-#else
-#include <pthread.h>
-#endif
 
 #ifndef EAGAIN
 #define EAGAIN 11
@@ -45,7 +41,6 @@ void *brealloc(void *ptr, size_t size);
 void bfree(void *ptr);
 char *bstrdup(const char *text);
 
-#ifdef _WIN32
 typedef struct mpt_thread_handle *pthread_t;
 typedef CRITICAL_SECTION pthread_mutex_t;
 
@@ -59,13 +54,6 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex);
 typedef struct os_event {
 	HANDLE handle;
 } os_event_t;
-#else
-typedef struct os_event {
-	pthread_mutex_t mutex;
-	bool signaled;
-	bool manual;
-} os_event_t;
-#endif
 
 int os_event_init(os_event_t **event, int type);
 void os_event_destroy(os_event_t *event);
@@ -91,11 +79,7 @@ size_t os_process_pipe_read(os_process_pipe_t *pipe, uint8_t *buffer, size_t siz
 size_t os_process_pipe_read_err(os_process_pipe_t *pipe, uint8_t *buffer, size_t size);
 int os_process_pipe_destroy(os_process_pipe_t *pipe);
 
-#ifdef _WIN32
 #define os_fseeki64 _fseeki64
-#else
-#define os_fseeki64 fseeko
-#endif
 
 #ifdef __cplusplus
 }

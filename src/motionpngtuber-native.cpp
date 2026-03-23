@@ -33,10 +33,7 @@
 #include <utility>
 #include <vector>
 
-#ifdef _WIN32
-#include <mmeapi.h>
 #include <objbase.h>
-#endif
 
 struct mpt_native_runtime {
 	void *impl;
@@ -70,7 +67,6 @@ struct AudioAnalysisWindow {
 constexpr const char *kAutoObsAudioSourceSelection = "__auto__";
 constexpr const char *kDirectInputAudioSourceSelection = "__direct__";
 
-#ifdef _WIN32
 static std::wstring utf8_to_wide(const char *text)
 {
 	if (!text || !*text)
@@ -86,17 +82,12 @@ static std::wstring utf8_to_wide(const char *text)
 		out.pop_back();
 	return out;
 }
-#endif
 
 static std::filesystem::path utf8_to_path(const char *text)
 {
 	if (!text || !*text)
 		return std::filesystem::path();
-#ifdef _WIN32
 	return std::filesystem::path(utf8_to_wide(text));
-#else
-	return std::filesystem::u8path(text);
-#endif
 }
 
 static std::filesystem::path utf8_to_path(const std::string &text)
@@ -138,7 +129,7 @@ static bool file_exists_utf8(const std::string &path)
 	return std::filesystem::is_regular_file(utf8_to_path(path));
 }
 
-static std::string resolve_track_json_candidate(const std::string &path)
+static std::string resolve_track_json_fallback_candidate(const std::string &path)
 {
 	if (path.empty())
 		return std::string();
@@ -161,6 +152,15 @@ static std::string resolve_track_json_candidate(const std::string &path)
 			return candidate.u8string();
 	}
 	return std::string();
+}
+
+static std::string resolve_track_input_candidate(const std::string &path)
+{
+	if (path.empty())
+		return std::string();
+	if ((is_json_path(path.c_str()) || is_npz_path(path.c_str())) && file_exists_utf8(path))
+		return path;
+	return resolve_track_json_fallback_candidate(path);
 }
 
 static char *dup_error(const std::string &message)
@@ -540,6 +540,582 @@ static bool read_text_file_utf8(const std::string &path, std::string &text)
 	return true;
 }
 
+static bool read_binary_file_utf8(const std::string &path, std::vector<uint8_t> &bytes)
+{
+	std::ifstream input(utf8_to_path(path), std::ios::binary);
+	if (!input)
+		return false;
+
+	input.seekg(0, std::ios::end);
+	std::streamoff size = input.tellg();
+	if (size < 0)
+		return false;
+	input.seekg(0, std::ios::beg);
+
+	bytes.resize((size_t)size);
+	if (size == 0)
+		return true;
+
+	input.read(reinterpret_cast<char *>(bytes.data()), size);
+	return input.good() || input.eof();
+}
+
+struct NpzEntryView {
+	std::string name;
+	uint16_t compression_method = 0;
+	const uint8_t *data = nullptr;
+	size_t compressed_size = 0;
+	size_t uncompressed_size = 0;
+};
+
+struct NpyArrayView {
+	std::string descr;
+	char byte_order = '|';
+	char kind = '\0';
+	size_t item_size = 0;
+	bool fortran_order = false;
+	std::vector<size_t> shape;
+	const uint8_t *data = nullptr;
+	size_t data_size = 0;
+};
+
+static uint16_t read_le16(const uint8_t *data)
+{
+	return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+}
+
+static uint32_t read_le32(const uint8_t *data)
+{
+	return (uint32_t)data[0] | ((uint32_t)data[1] << 8) | ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
+}
+
+static bool npy_find_value_start(const std::string &header, const char *name, size_t &value_pos)
+{
+	if (!name || !*name)
+		return false;
+
+	std::string single_quote_key = std::string("'") + name + "'";
+	size_t key_pos = header.find(single_quote_key);
+	if (key_pos == std::string::npos) {
+		std::string double_quote_key = std::string("\"") + name + "\"";
+		key_pos = header.find(double_quote_key);
+	}
+	if (key_pos == std::string::npos)
+		return false;
+
+	size_t colon_pos = header.find(':', key_pos);
+	if (colon_pos == std::string::npos)
+		return false;
+
+	value_pos = colon_pos + 1;
+	while (value_pos < header.size() && std::isspace((unsigned char)header[value_pos]))
+		++value_pos;
+	return value_pos < header.size();
+}
+
+static bool npy_try_get_quoted_value(const std::string &header, const char *name, std::string &out)
+{
+	size_t value_pos = 0;
+	if (!npy_find_value_start(header, name, value_pos))
+		return false;
+	if (value_pos >= header.size())
+		return false;
+
+	char quote = header[value_pos];
+	if (quote != '\'' && quote != '"')
+		return false;
+
+	size_t end_pos = header.find(quote, value_pos + 1);
+	if (end_pos == std::string::npos)
+		return false;
+
+	out = header.substr(value_pos + 1, end_pos - value_pos - 1);
+	return true;
+}
+
+static bool npy_try_get_bool_value(const std::string &header, const char *name, bool &out)
+{
+	size_t value_pos = 0;
+	if (!npy_find_value_start(header, name, value_pos))
+		return false;
+	if (header.compare(value_pos, 4, "True") == 0) {
+		out = true;
+		return true;
+	}
+	if (header.compare(value_pos, 5, "False") == 0) {
+		out = false;
+		return true;
+	}
+	return false;
+}
+
+static bool npy_try_get_shape_value(const std::string &header, std::vector<size_t> &shape)
+{
+	size_t value_pos = 0;
+	if (!npy_find_value_start(header, "shape", value_pos))
+		return false;
+	if (value_pos >= header.size() || header[value_pos] != '(')
+		return false;
+
+	size_t end_pos = header.find(')', value_pos);
+	if (end_pos == std::string::npos)
+		return false;
+
+	shape.clear();
+	size_t cursor = value_pos + 1;
+	while (cursor < end_pos) {
+		while (cursor < end_pos && (std::isspace((unsigned char)header[cursor]) || header[cursor] == ','))
+			++cursor;
+		if (cursor >= end_pos)
+			break;
+
+		const char *start = header.c_str() + cursor;
+		char *end = nullptr;
+		unsigned long long dim = std::strtoull(start, &end, 10);
+		if (start == end)
+			return false;
+		if (dim > std::numeric_limits<size_t>::max())
+			return false;
+		shape.push_back((size_t)dim);
+		cursor = (size_t)(end - header.c_str());
+	}
+
+	return true;
+}
+
+static bool safe_multiply_size(size_t lhs, size_t rhs, size_t &out)
+{
+	if (lhs == 0 || rhs == 0) {
+		out = 0;
+		return true;
+	}
+	if (lhs > std::numeric_limits<size_t>::max() / rhs)
+		return false;
+	out = lhs * rhs;
+	return true;
+}
+
+static bool npy_try_total_elements(const NpyArrayView &array, size_t &total)
+{
+	total = 1;
+	for (size_t dim : array.shape) {
+		if (!safe_multiply_size(total, dim, total))
+			return false;
+	}
+	return true;
+}
+
+static const NpzEntryView *find_npz_entry(const std::vector<NpzEntryView> &entries, const char *name)
+{
+	for (const auto &entry : entries) {
+		if (entry.name == name)
+			return &entry;
+	}
+	return nullptr;
+}
+
+static bool parse_npz_entries(const std::vector<uint8_t> &archive, std::vector<NpzEntryView> &entries, std::string &error)
+{
+	entries.clear();
+	size_t offset = 0;
+	while (offset + 4U <= archive.size()) {
+		uint32_t signature = read_le32(&archive[offset]);
+		if (signature == 0x02014b50U || signature == 0x06054b50U)
+			break;
+		if (signature != 0x04034b50U) {
+			error = "NPZ does not contain a valid ZIP local header";
+			return false;
+		}
+		if (offset + 30U > archive.size()) {
+			error = "NPZ local header is truncated";
+			return false;
+		}
+
+		uint16_t flags = read_le16(&archive[offset + 6U]);
+		uint16_t compression_method = read_le16(&archive[offset + 8U]);
+		uint32_t compressed_size = read_le32(&archive[offset + 18U]);
+		uint32_t uncompressed_size = read_le32(&archive[offset + 22U]);
+		uint16_t name_length = read_le16(&archive[offset + 26U]);
+		uint16_t extra_length = read_le16(&archive[offset + 28U]);
+
+		if ((flags & 0x0008U) != 0) {
+			error = "NPZ uses ZIP data descriptors, which are not supported";
+			return false;
+		}
+
+		size_t name_offset = offset + 30U;
+		size_t data_offset = name_offset + (size_t)name_length + (size_t)extra_length;
+		if (name_offset + (size_t)name_length > archive.size() || data_offset > archive.size()) {
+			error = "NPZ local header is truncated";
+			return false;
+		}
+		if (data_offset + (size_t)compressed_size > archive.size()) {
+			error = "NPZ member data is truncated";
+			return false;
+		}
+
+		NpzEntryView entry;
+		entry.name.assign(reinterpret_cast<const char *>(&archive[name_offset]), name_length);
+		entry.compression_method = compression_method;
+		entry.data = archive.data() + data_offset;
+		entry.compressed_size = compressed_size;
+		entry.uncompressed_size = uncompressed_size;
+		entries.push_back(entry);
+
+		offset = data_offset + (size_t)compressed_size;
+	}
+
+	if (entries.empty()) {
+		error = "NPZ archive does not contain any readable members";
+		return false;
+	}
+	return true;
+}
+
+static bool parse_npy_array(const NpzEntryView &entry, NpyArrayView &array, std::string &error)
+{
+	if (entry.compression_method != 0) {
+		error = "compressed NPZ members are not supported yet";
+		return false;
+	}
+	if (!entry.data || entry.compressed_size < 10U) {
+		error = "NPY member is truncated";
+		return false;
+	}
+	if (!(entry.data[0] == 0x93 && entry.data[1] == 'N' && entry.data[2] == 'U' && entry.data[3] == 'M' &&
+	      entry.data[4] == 'P' && entry.data[5] == 'Y')) {
+		error = "NPZ member is not an NPY array";
+		return false;
+	}
+
+	uint8_t major = entry.data[6];
+	size_t header_size_field = 0;
+	size_t header_length = 0;
+	if (major == 1) {
+		header_size_field = 2;
+		header_length = read_le16(entry.data + 8);
+	} else if (major == 2 || major == 3) {
+		if (entry.compressed_size < 12U) {
+			error = "NPY member is truncated";
+			return false;
+		}
+		header_size_field = 4;
+		header_length = read_le32(entry.data + 8);
+	} else {
+		error = "unsupported NPY format version";
+		return false;
+	}
+
+	size_t header_offset = 8U + header_size_field;
+	if (header_length > entry.compressed_size - header_offset) {
+		error = "NPY header is truncated";
+		return false;
+	}
+	size_t data_offset = header_offset + header_length;
+
+	std::string header(reinterpret_cast<const char *>(entry.data + header_offset), header_length);
+	std::string descr;
+	if (!npy_try_get_quoted_value(header, "descr", descr)) {
+		error = "NPY header does not contain descr";
+		return false;
+	}
+
+	bool fortran_order = false;
+	if (!npy_try_get_bool_value(header, "fortran_order", fortran_order)) {
+		error = "NPY header does not contain fortran_order";
+		return false;
+	}
+	if (fortran_order) {
+		error = "Fortran-ordered NPY arrays are not supported";
+		return false;
+	}
+
+	std::vector<size_t> shape;
+	if (!npy_try_get_shape_value(header, shape)) {
+		error = "NPY header does not contain shape";
+		return false;
+	}
+	if (descr.size() < 3U) {
+		error = "NPY dtype descriptor is invalid";
+		return false;
+	}
+
+	char byte_order = descr[0];
+	char kind = descr[1];
+	if (byte_order != '<' && byte_order != '|' && byte_order != '=') {
+		error = "unsupported NPY byte order";
+		return false;
+	}
+
+	unsigned long item_size = std::strtoul(descr.c_str() + 2, nullptr, 10);
+	if (item_size == 0) {
+		error = "NPY dtype item size is invalid";
+		return false;
+	}
+
+	array.descr = descr;
+	array.byte_order = byte_order;
+	array.kind = kind;
+	array.item_size = (size_t)item_size;
+	array.fortran_order = false;
+	array.shape = std::move(shape);
+	array.data = entry.data + data_offset;
+
+	size_t total_elements = 0;
+	if (!npy_try_total_elements(array, total_elements)) {
+		error = "NPY array is too large";
+		return false;
+	}
+
+	size_t expected_bytes = 1;
+	if (!safe_multiply_size(total_elements, array.item_size, expected_bytes)) {
+		error = "NPY array is too large";
+		return false;
+	}
+	if (expected_bytes > entry.compressed_size - data_offset) {
+		error = "NPY payload is truncated";
+		return false;
+	}
+	array.data_size = expected_bytes;
+	return true;
+}
+
+template<typename T>
+static T read_unaligned_value(const uint8_t *data)
+{
+	T value {};
+	memcpy(&value, data, sizeof(T));
+	return value;
+}
+
+static bool npy_read_number_at(const NpyArrayView &array, size_t index, double &out, std::string &error)
+{
+	size_t offset = 0;
+	if (!safe_multiply_size(index, array.item_size, offset) || offset + array.item_size > array.data_size) {
+		error = "NPY index is out of range";
+		return false;
+	}
+
+	const uint8_t *ptr = array.data + offset;
+	switch (array.kind) {
+	case 'b':
+		if (array.item_size == 1U) {
+			out = ptr[0] ? 1.0 : 0.0;
+			return true;
+		}
+		break;
+
+	case 'u':
+		switch (array.item_size) {
+		case 1U:
+			out = (double)ptr[0];
+			return true;
+		case 2U:
+			out = (double)read_unaligned_value<uint16_t>(ptr);
+			return true;
+		case 4U:
+			out = (double)read_unaligned_value<uint32_t>(ptr);
+			return true;
+		case 8U:
+			out = (double)read_unaligned_value<uint64_t>(ptr);
+			return true;
+		}
+		break;
+
+	case 'i':
+		switch (array.item_size) {
+		case 1U:
+			out = (double)read_unaligned_value<int8_t>(ptr);
+			return true;
+		case 2U:
+			out = (double)read_unaligned_value<int16_t>(ptr);
+			return true;
+		case 4U:
+			out = (double)read_unaligned_value<int32_t>(ptr);
+			return true;
+		case 8U:
+			out = (double)read_unaligned_value<int64_t>(ptr);
+			return true;
+		}
+		break;
+
+	case 'f':
+		switch (array.item_size) {
+		case 4U:
+			out = (double)read_unaligned_value<float>(ptr);
+			return true;
+		case 8U:
+			out = read_unaligned_value<double>(ptr);
+			return true;
+		}
+		break;
+	}
+
+	error = std::string("unsupported NPY dtype: ") + array.descr;
+	return false;
+}
+
+static bool npy_read_numeric_values(const NpyArrayView &array, std::vector<double> &values, std::string &error)
+{
+	size_t total = 0;
+	if (!npy_try_total_elements(array, total)) {
+		error = "NPY array is too large";
+		return false;
+	}
+	values.resize(total);
+	for (size_t idx = 0; idx < total; ++idx) {
+		if (!npy_read_number_at(array, idx, values[idx], error))
+			return false;
+	}
+	return true;
+}
+
+static bool npy_read_scalar_number(const NpyArrayView &array, double &out, std::string &error)
+{
+	size_t total = 0;
+	if (!npy_try_total_elements(array, total)) {
+		error = "NPY array is too large";
+		return false;
+	}
+	if (total == 0 || total > 1) {
+		error = "NPY scalar array is not a scalar";
+		return false;
+	}
+	return npy_read_number_at(array, 0, out, error);
+}
+
+static void populate_quad_from_bbox_values(const std::vector<double> &bbox_values, size_t frame_index, float sx, float sy,
+					   QuadFrame &quad)
+{
+	size_t base = frame_index * 4U;
+	double x = bbox_values[base + 0];
+	double y = bbox_values[base + 1];
+	double w = bbox_values[base + 2];
+	double h = bbox_values[base + 3];
+	quad.points[0].x = (float)x * sx;
+	quad.points[0].y = (float)y * sy;
+	quad.points[1].x = (float)(x + w) * sx;
+	quad.points[1].y = (float)y * sy;
+	quad.points[2].x = (float)(x + w) * sx;
+	quad.points[2].y = (float)(y + h) * sy;
+	quad.points[3].x = (float)x * sx;
+	quad.points[3].y = (float)(y + h) * sy;
+}
+
+static bool load_track_frames_from_npz(const std::string &path, uint32_t output_width, uint32_t output_height,
+				       std::vector<QuadFrame> &frames_out, bool &any_valid, std::string &error)
+{
+	std::vector<uint8_t> archive;
+	if (!read_binary_file_utf8(path, archive)) {
+		error = "failed to read track NPZ";
+		return false;
+	}
+
+	std::vector<NpzEntryView> entries;
+	if (!parse_npz_entries(archive, entries, error))
+		return false;
+
+	const NpzEntryView *quad_entry = find_npz_entry(entries, "quad.npy");
+	const NpzEntryView *bbox_entry = find_npz_entry(entries, "bbox.npy");
+	if (!quad_entry && !bbox_entry) {
+		error = "track NPZ must contain quad.npy or bbox.npy";
+		return false;
+	}
+
+	size_t frame_count = 0;
+	std::vector<double> primary_values;
+	if (quad_entry) {
+		NpyArrayView quad_array;
+		if (!parse_npy_array(*quad_entry, quad_array, error))
+			return false;
+		if (quad_array.shape.size() != 3U || quad_array.shape[1] != 4U || quad_array.shape[2] != 2U) {
+			error = "track NPZ quad array must be shaped (N,4,2)";
+			return false;
+		}
+		frame_count = quad_array.shape[0];
+		if (!npy_read_numeric_values(quad_array, primary_values, error))
+			return false;
+	} else {
+		NpyArrayView bbox_array;
+		if (!parse_npy_array(*bbox_entry, bbox_array, error))
+			return false;
+		if (bbox_array.shape.size() != 2U || bbox_array.shape[1] != 4U) {
+			error = "track NPZ bbox array must be shaped (N,4)";
+			return false;
+		}
+		frame_count = bbox_array.shape[0];
+		if (!npy_read_numeric_values(bbox_array, primary_values, error))
+			return false;
+	}
+
+	std::vector<bool> valid(frame_count, true);
+	if (const NpzEntryView *valid_entry = find_npz_entry(entries, "valid.npy")) {
+		NpyArrayView valid_array;
+		if (!parse_npy_array(*valid_entry, valid_array, error))
+			return false;
+		size_t valid_count = 0;
+		if (!npy_try_total_elements(valid_array, valid_count)) {
+			error = "NPY array is too large";
+			return false;
+		}
+		if (valid_count == frame_count) {
+			for (size_t idx = 0; idx < frame_count; ++idx) {
+				double value = 0.0;
+				if (!npy_read_number_at(valid_array, idx, value, error))
+					return false;
+				valid[idx] = value != 0.0;
+			}
+		}
+	}
+
+	double src_w = (double)output_width;
+	if (const NpzEntryView *width_entry = find_npz_entry(entries, "w.npy")) {
+		NpyArrayView width_array;
+		if (!parse_npy_array(*width_entry, width_array, error))
+			return false;
+		if (!npy_read_scalar_number(width_array, src_w, error))
+			return false;
+	}
+
+	double src_h = (double)output_height;
+	if (const NpzEntryView *height_entry = find_npz_entry(entries, "h.npy")) {
+		NpyArrayView height_array;
+		if (!parse_npy_array(*height_entry, height_array, error))
+			return false;
+		if (!npy_read_scalar_number(height_array, src_h, error))
+			return false;
+	}
+
+	float sx = (float)output_width / (float)std::max(1.0, src_w);
+	float sy = (float)output_height / (float)std::max(1.0, src_h);
+	frames_out.clear();
+	frames_out.reserve(frame_count);
+	any_valid = false;
+
+	for (size_t idx = 0; idx < frame_count; ++idx) {
+		QuadFrame quad {};
+		quad.valid = valid[idx];
+		if (quad_entry) {
+			size_t base = idx * 8U;
+			for (size_t point = 0; point < 4U; ++point) {
+				quad.points[point].x = (float)primary_values[base + point * 2U + 0U] * sx;
+				quad.points[point].y = (float)primary_values[base + point * 2U + 1U] * sy;
+			}
+		} else {
+			populate_quad_from_bbox_values(primary_values, idx, sx, sy, quad);
+		}
+		prepare_quad_frame(quad, output_width, output_height);
+		frames_out.push_back(quad);
+		any_valid = any_valid || quad.valid;
+	}
+
+	if (frames_out.empty()) {
+		error = "track NPZ did not produce any usable frames";
+		return false;
+	}
+	return true;
+}
+
 static bool json_find_value_start(const std::string &json, const char *name, size_t &value_pos)
 {
 	if (!name || !*name)
@@ -813,6 +1389,31 @@ static bool load_track_frames_from_json(const std::string &path, uint32_t output
 	return true;
 }
 
+static bool load_track_frames_from_path(const std::string &path, uint32_t output_width, uint32_t output_height,
+					std::vector<QuadFrame> &frames_out, bool &any_valid, std::string &error)
+{
+	if (is_npz_path(path.c_str())) {
+		if (load_track_frames_from_npz(path, output_width, output_height, frames_out, any_valid, error))
+			return true;
+
+		std::string npz_error = error;
+		std::string fallback_json = resolve_track_json_fallback_candidate(path);
+		if (!fallback_json.empty() && fallback_json != path) {
+			std::string fallback_error;
+			if (load_track_frames_from_json(fallback_json, output_width, output_height, frames_out, any_valid, fallback_error)) {
+				obs_log(LOG_WARNING, "falling back to sibling JSON track for unsupported NPZ '%s': %s", path.c_str(),
+					npz_error.c_str());
+				return true;
+			}
+		}
+
+		error = npz_error;
+		return false;
+	}
+
+	return load_track_frames_from_json(path, output_width, output_height, frames_out, any_valid, error);
+}
+
 static double read_audio_sample_normalized(const uint8_t *data, enum audio_format format)
 {
 	if (!data)
@@ -933,15 +1534,12 @@ public:
 		shutdown_audio();
 		mpt_image_backend_destroy(image_backend_);
 		mpt_video_backend_destroy(video_backend_);
-#ifdef _WIN32
 		if (co_initialized_)
 			CoUninitialize();
-#endif
 	}
 
 	bool initialize(std::string &error)
 	{
-#ifdef _WIN32
 		HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 		if (SUCCEEDED(hr))
 			co_initialized_ = true;
@@ -949,7 +1547,6 @@ public:
 			error = "CoInitializeEx failed";
 			return false;
 		}
-#endif
 
 		if (!mpt_image_backend_create(&image_backend_, error)) {
 			return false;
@@ -1036,11 +1633,11 @@ private:
 
 	bool initialize_track(std::string &error)
 	{
-		std::string selected_track = select_track_json_path_from_state(error);
+		std::string selected_track = select_track_path_from_state(error);
 		if (selected_track.empty())
 			return false;
 		bool any_valid = false;
-		if (!load_track_frames_from_json(selected_track, output_.width, output_.height, track_frames_, any_valid, error))
+		if (!load_track_frames_from_path(selected_track, output_.width, output_.height, track_frames_, any_valid, error))
 			return false;
 
 		track_filled_ = track_frames_;
@@ -1132,17 +1729,16 @@ private:
 		return make_variant_from_open(fallback, key);
 	}
 
-	std::string select_track_json_path_from_state(std::string &error) const
+	std::string select_track_path_from_state(std::string &error) const
 	{
-		std::string track = resolve_track_json_candidate(track_calibrated_path_);
+		std::string track = resolve_track_input_candidate(track_calibrated_path_);
 		if (!track.empty())
 			return track;
-		track = resolve_track_json_candidate(track_file_path_);
+		track = resolve_track_input_candidate(track_file_path_);
 		if (!track.empty())
 			return track;
 
-		error =
-			"Track file must be a JSON export or an NPZ with a sibling mouth_track.json generated by convert_npz_to_json.py.";
+		error = "Track file must be a JSON export or a supported NPZ archive.";
 		return std::string();
 	}
 
@@ -1295,65 +1891,9 @@ private:
 		if (obs_audio_follow_requested() && try_attach_obs_audio_source(true))
 			return;
 
-#ifdef _WIN32
-		UINT device_index = resolve_audio_device();
-		if (device_index == UINT_MAX)
-			return;
-
-		struct FormatCandidate {
-			uint16_t channels;
-			uint32_t sample_rate;
-		};
-		const FormatCandidate candidates[] = {
-			{1, 44100},
-			{1, 48000},
-			{2, 44100},
-			{2, 48000},
-		};
-
-		for (const auto &candidate : candidates) {
-			HWAVEIN opened_wave_in = nullptr;
-			WAVEFORMATEX wfx = {};
-			wfx.wFormatTag = WAVE_FORMAT_PCM;
-			wfx.nChannels = candidate.channels;
-			wfx.nSamplesPerSec = candidate.sample_rate;
-			wfx.wBitsPerSample = 16;
-			wfx.nBlockAlign = (WORD)(wfx.nChannels * (wfx.wBitsPerSample / 8));
-			wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
-
-			if (waveInOpen(&opened_wave_in, device_index, &wfx, (DWORD_PTR)&NativeRuntime::wave_in_callback,
-				       (DWORD_PTR)this, CALLBACK_FUNCTION) != MMSYSERR_NOERROR) {
-				continue;
-			}
-			wave_in_.store(opened_wave_in);
-
-			audio_channels_ = wfx.nChannels;
-			audio_sample_rate_ = wfx.nSamplesPerSec;
-			size_t samples_per_buffer = 1024U;
-			for (size_t idx = 0; idx < audio_headers_.size(); ++idx) {
-				audio_storage_[idx].resize(samples_per_buffer * audio_channels_);
-				memset(&audio_headers_[idx], 0, sizeof(WAVEHDR));
-				audio_headers_[idx].lpData = (LPSTR)audio_storage_[idx].data();
-				audio_headers_[idx].dwBufferLength =
-					(DWORD)(audio_storage_[idx].size() * sizeof(int16_t));
-				if (waveInPrepareHeader(opened_wave_in, &audio_headers_[idx], sizeof(WAVEHDR)) != MMSYSERR_NOERROR) {
-					shutdown_audio();
-					return;
-				}
-				if (waveInAddBuffer(opened_wave_in, &audio_headers_[idx], sizeof(WAVEHDR)) != MMSYSERR_NOERROR) {
-					shutdown_audio();
-					return;
-				}
-			}
-			if (waveInStart(opened_wave_in) == MMSYSERR_NOERROR)
-				return;
-			shutdown_audio();
-		}
-#else
 		std::string ignored_error;
 		mpt_audio_backend_start_input_capture(audio_identity_json_, audio_device_index_, &NativeRuntime::audio_input_callback, this,
 						      &audio_capture_, ignored_error);
-#endif
 	}
 
 	void shutdown_audio()
@@ -1366,21 +1906,8 @@ private:
 		clear_audio_analysis_windows();
 		next_obs_audio_attach_attempt_ns_ = 0;
 
-#ifdef _WIN32
-		HWAVEIN wave_in = wave_in_.exchange(nullptr);
-		if (wave_in) {
-			waveInStop(wave_in);
-			waveInReset(wave_in);
-			for (auto &header : audio_headers_) {
-				if (header.dwFlags & WHDR_PREPARED)
-					waveInUnprepareHeader(wave_in, &header, sizeof(WAVEHDR));
-			}
-			waveInClose(wave_in);
-		}
-#else
 		mpt_audio_backend_stop_input_capture(audio_capture_);
 		audio_capture_ = nullptr;
-#endif
 	}
 
 	static void obs_audio_capture_callback(void *param, obs_source_t *source, const struct audio_data *audio_data,
@@ -1392,56 +1919,6 @@ private:
 			return;
 		runtime->handle_obs_source_audio(audio_data, muted);
 	}
-
-#ifdef _WIN32
-	UINT resolve_audio_device() const
-	{
-		uint32_t device_index = 0;
-		if (!mpt_audio_backend_resolve_input_device(audio_identity_json_, audio_device_index_, &device_index))
-			return UINT_MAX;
-		return static_cast<UINT>(device_index);
-	}
-
-	static void CALLBACK wave_in_callback(HWAVEIN hwi, UINT msg, DWORD_PTR instance, DWORD_PTR param1, DWORD_PTR param2)
-	{
-		UNUSED_PARAMETER(hwi);
-		UNUSED_PARAMETER(param2);
-		if (msg != WIM_DATA || !instance || !param1)
-			return;
-		auto *runtime = reinterpret_cast<NativeRuntime *>(instance);
-		runtime->handle_audio_buffer(reinterpret_cast<WAVEHDR *>(param1));
-	}
-
-	void handle_audio_buffer(WAVEHDR *header)
-	{
-		if (!header)
-			return;
-		auto requeue_buffer = [&](WAVEHDR *queued_header) {
-			HWAVEIN wave_in = wave_in_.load();
-			if (!wave_in)
-				return;
-			if (waveInAddBuffer(wave_in, queued_header, sizeof(WAVEHDR)) != MMSYSERR_NOERROR) {
-				latest_rms_.store(0.0f);
-				latest_zcr_.store(0.0f);
-			}
-		};
-		if (header->dwBytesRecorded == 0) {
-			requeue_buffer(header);
-			return;
-		}
-
-		const int16_t *samples = reinterpret_cast<const int16_t *>(header->lpData);
-		size_t sample_count = header->dwBytesRecorded / sizeof(int16_t);
-		if (sample_count == 0) {
-			requeue_buffer(header);
-			return;
-		}
-
-		handle_audio_samples(samples, sample_count, audio_channels_, audio_sample_rate_);
-
-		requeue_buffer(header);
-	}
-#endif
 
 	static void audio_input_callback(const int16_t *samples, size_t sample_count, uint16_t channels, uint32_t sample_rate,
 					 void *userdata)
@@ -1580,13 +2057,6 @@ private:
 	bool obs_audio_attach_warning_logged_ = false;
 	std::mutex audio_windows_mutex_;
 	std::deque<AudioAnalysisWindow> audio_windows_;
-#ifdef _WIN32
-	std::atomic<HWAVEIN> wave_in_ {nullptr};
-	uint16_t audio_channels_ = 1;
-	uint32_t audio_sample_rate_ = 44100;
-	std::array<std::vector<int16_t>, 3> audio_storage_ {};
-	std::array<WAVEHDR, 3> audio_headers_ {};
-#endif
 	std::atomic<float> latest_rms_ {0.0f};
 	std::atomic<float> latest_zcr_ {0.0f};
 	float noise_floor_ = 0.0001f;
