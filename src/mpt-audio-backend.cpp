@@ -1,7 +1,9 @@
 #include "mpt-audio-backend.h"
 
 #include "motionpngtuber-native.h"
+#include "plugin-support.h"
 
+#include <atomic>
 #include <array>
 #include <cstring>
 #include <new>
@@ -9,16 +11,35 @@
 #include <utility>
 #include <vector>
 
+#include <windows.h>
 #include <mmeapi.h>
 
 struct MptAudioCapture {
 	HWAVEIN wave_in = nullptr;
 	uint16_t channels = 1;
 	uint32_t sample_rate = 44100;
-	MptAudioInputCallback callback = nullptr;
-	void *userdata = nullptr;
+	std::atomic<MptAudioInputCallback> callback {nullptr};
+	std::atomic<void *> userdata {nullptr};
 	std::array<std::vector<int16_t>, 3> storage {};
 	std::array<WAVEHDR, 3> headers {};
+	std::atomic<uint32_t> active_callbacks {0};
+	std::atomic<bool> stop_requested {false};
+	HANDLE data_ready_event = nullptr;
+	HANDLE stop_event = nullptr;
+	HANDLE close_event = nullptr;
+	HANDLE worker_thread = nullptr;
+
+	~MptAudioCapture()
+	{
+		if (worker_thread)
+			CloseHandle(worker_thread);
+		if (data_ready_event)
+			CloseHandle(data_ready_event);
+		if (stop_event)
+			CloseHandle(stop_event);
+		if (close_event)
+			CloseHandle(close_event);
+	}
 };
 
 namespace {
@@ -34,6 +55,19 @@ static const AudioFormatCandidate k_audio_format_candidates[] = {
 	{2, 44100},
 	{2, 48000},
 };
+
+static void log_wavein_warning(const char *operation, MMRESULT result)
+{
+	char text[MAXERRORLENGTH] = {};
+	if (waveInGetErrorTextA(result, text, MAXERRORLENGTH) != MMSYSERR_NOERROR || !text[0]) {
+		obs_log(LOG_WARNING, "%s failed for MotionPngTuberPlayer audio capture (MMRESULT=%u)", operation,
+			(unsigned int)result);
+		return;
+	}
+
+	obs_log(LOG_WARNING, "%s failed for MotionPngTuberPlayer audio capture: %s (MMRESULT=%u)", operation, text,
+		(unsigned int)result);
+}
 
 static std::string build_identity_json(uint32_t index, const std::string &name, const char *host_api)
 {
@@ -79,37 +113,104 @@ static bool get_wavein_device_name(UINT idx, std::string &name_out)
 
 static void dispatch_audio_samples(MptAudioCapture *capture, const int16_t *samples, size_t sample_count)
 {
-	if (!capture || !capture->callback || !samples || sample_count == 0)
+	if (!capture || !samples || sample_count == 0)
 		return;
-	capture->callback(samples, sample_count, capture->channels, capture->sample_rate, capture->userdata);
+
+	MptAudioInputCallback callback = capture->callback.load(std::memory_order_acquire);
+	void *userdata = capture->userdata.load(std::memory_order_acquire);
+	if (!callback)
+		return;
+	callback(samples, sample_count, capture->channels, capture->sample_rate, userdata);
+}
+
+static void process_pending_audio_buffers(MptAudioCapture *capture)
+{
+	if (!capture)
+		return;
+
+	for (auto &header : capture->headers) {
+		if ((header.dwFlags & WHDR_DONE) == 0)
+			continue;
+
+		size_t sample_count = header.dwBytesRecorded / sizeof(int16_t);
+		if (!capture->stop_requested.load(std::memory_order_acquire) && sample_count > 0)
+			dispatch_audio_samples(capture, reinterpret_cast<const int16_t *>(header.lpData), sample_count);
+
+		header.dwBytesRecorded = 0;
+		if (capture->stop_requested.load(std::memory_order_acquire))
+			continue;
+
+		if (!capture->wave_in)
+			continue;
+
+		MMRESULT result = waveInAddBuffer(capture->wave_in, &header, sizeof(WAVEHDR));
+		if (result != MMSYSERR_NOERROR)
+			log_wavein_warning("waveInAddBuffer", result);
+	}
+}
+
+static DWORD WINAPI audio_capture_worker_thread(void *param)
+{
+	auto *capture = reinterpret_cast<MptAudioCapture *>(param);
+	if (!capture || !capture->stop_event || !capture->data_ready_event)
+		return 0;
+
+	HANDLE handles[] = {capture->stop_event, capture->data_ready_event};
+	for (;;) {
+		DWORD wait_result = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+		if (wait_result == WAIT_OBJECT_0)
+			return 0;
+		if (wait_result != WAIT_OBJECT_0 + 1) {
+			obs_log(LOG_WARNING, "MotionPngTuberPlayer audio worker wait failed during capture");
+			return 0;
+		}
+
+		process_pending_audio_buffers(capture);
+	}
+}
+
+static MptAudioCapture *create_audio_capture(MptAudioInputCallback callback, void *userdata)
+{
+	auto *capture = new (std::nothrow) MptAudioCapture();
+	if (!capture)
+		return nullptr;
+
+	capture->callback.store(callback, std::memory_order_release);
+	capture->userdata.store(userdata, std::memory_order_release);
+	capture->data_ready_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+	capture->stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	capture->close_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	if (!capture->data_ready_event || !capture->stop_event || !capture->close_event) {
+		delete capture;
+		return nullptr;
+	}
+
+	return capture;
 }
 
 static void CALLBACK wave_in_callback(HWAVEIN hwi, UINT msg, DWORD_PTR instance, DWORD_PTR param1, DWORD_PTR param2)
 {
 	UNUSED_PARAMETER(hwi);
+	UNUSED_PARAMETER(param1);
 	UNUSED_PARAMETER(param2);
-	if (msg != WIM_DATA || !instance || !param1)
+	if (!instance)
 		return;
 
 	auto *capture = reinterpret_cast<MptAudioCapture *>(instance);
-	auto *header = reinterpret_cast<WAVEHDR *>(param1);
-	if (!capture || !header)
+	if (!capture)
 		return;
 
-	auto requeue_buffer = [&](WAVEHDR *queued_header) {
-		if (!capture->wave_in)
-			return;
-		waveInAddBuffer(capture->wave_in, queued_header, sizeof(WAVEHDR));
-	};
-
-	if (header->dwBytesRecorded == 0) {
-		requeue_buffer(header);
+	capture->active_callbacks.fetch_add(1, std::memory_order_acq_rel);
+	if (msg == WIM_DATA) {
+		if (capture->data_ready_event)
+			SetEvent(capture->data_ready_event);
+		capture->active_callbacks.fetch_sub(1, std::memory_order_acq_rel);
 		return;
 	}
 
-	size_t sample_count = header->dwBytesRecorded / sizeof(int16_t);
-	dispatch_audio_samples(capture, reinterpret_cast<const int16_t *>(header->lpData), sample_count);
-	requeue_buffer(header);
+	if (msg == WIM_CLOSE && capture->close_event)
+		SetEvent(capture->close_event);
+	capture->active_callbacks.fetch_sub(1, std::memory_order_acq_rel);
 }
 
 static bool parse_identity_json(const std::string &identity_json, std::string &name_out, std::string &host_api_out,
@@ -219,9 +320,9 @@ bool mpt_audio_backend_start_input_capture(const std::string &identity_json, lon
 		return false;
 	}
 
-	auto *capture = new (std::nothrow) MptAudioCapture();
+	auto *capture = create_audio_capture(callback, userdata);
 	if (!capture) {
-		error = "out of memory while creating audio capture";
+		error = "failed to allocate audio capture state";
 		return false;
 	}
 
@@ -231,9 +332,6 @@ bool mpt_audio_backend_start_input_capture(const std::string &identity_json, lon
 		error = "failed to resolve audio input device";
 		return false;
 	}
-
-	capture->callback = callback;
-	capture->userdata = userdata;
 
 	for (const auto &candidate : k_audio_format_candidates) {
 		HWAVEIN opened_wave_in = nullptr;
@@ -268,19 +366,25 @@ bool mpt_audio_backend_start_input_capture(const std::string &identity_json, lon
 			}
 		}
 
+		if (headers_ready) {
+			capture->worker_thread = CreateThread(nullptr, 0, &audio_capture_worker_thread, capture, 0, nullptr);
+			if (!capture->worker_thread) {
+				error = "failed to start audio capture worker thread";
+				headers_ready = false;
+			}
+		}
+
 		if (headers_ready && waveInStart(opened_wave_in) == MMSYSERR_NOERROR) {
 			*out_capture = capture;
 			return true;
 		}
 
 		mpt_audio_backend_stop_input_capture(capture);
-		capture = new (std::nothrow) MptAudioCapture();
+		capture = create_audio_capture(callback, userdata);
 		if (!capture) {
-			error = "out of memory while retrying audio capture";
+			error = "failed to allocate audio capture state";
 			return false;
 		}
-		capture->callback = callback;
-		capture->userdata = userdata;
 	}
 
 	delete capture;
@@ -293,14 +397,41 @@ void mpt_audio_backend_stop_input_capture(MptAudioCapture *capture)
 	if (!capture)
 		return;
 
+	capture->callback.store(nullptr, std::memory_order_release);
+	capture->userdata.store(nullptr, std::memory_order_release);
+	capture->stop_requested.store(true, std::memory_order_release);
+	if (capture->stop_event)
+		SetEvent(capture->stop_event);
+	if (capture->worker_thread) {
+		WaitForSingleObject(capture->worker_thread, INFINITE);
+		CloseHandle(capture->worker_thread);
+		capture->worker_thread = nullptr;
+	}
+
 	if (capture->wave_in) {
-		waveInStop(capture->wave_in);
-		waveInReset(capture->wave_in);
+		MMRESULT stop_result = waveInStop(capture->wave_in);
+		if (stop_result != MMSYSERR_NOERROR)
+			log_wavein_warning("waveInStop", stop_result);
+		MMRESULT reset_result = waveInReset(capture->wave_in);
+		if (reset_result != MMSYSERR_NOERROR)
+			log_wavein_warning("waveInReset", reset_result);
 		for (auto &header : capture->headers) {
-			if (header.dwFlags & WHDR_PREPARED)
-				waveInUnprepareHeader(capture->wave_in, &header, sizeof(WAVEHDR));
+			if ((header.dwFlags & WHDR_PREPARED) == 0)
+				continue;
+			MMRESULT unprepare_result = waveInUnprepareHeader(capture->wave_in, &header, sizeof(WAVEHDR));
+			if (unprepare_result != MMSYSERR_NOERROR)
+				log_wavein_warning("waveInUnprepareHeader", unprepare_result);
 		}
-		waveInClose(capture->wave_in);
+		if (capture->close_event)
+			ResetEvent(capture->close_event);
+		MMRESULT close_result = waveInClose(capture->wave_in);
+		if (close_result != MMSYSERR_NOERROR) {
+			log_wavein_warning("waveInClose", close_result);
+		} else if (capture->close_event) {
+			WaitForSingleObject(capture->close_event, INFINITE);
+			while (capture->active_callbacks.load(std::memory_order_acquire) != 0)
+				Sleep(1);
+		}
 		capture->wave_in = nullptr;
 	}
 

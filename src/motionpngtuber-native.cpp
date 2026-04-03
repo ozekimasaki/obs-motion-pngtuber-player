@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cctype>
 #include <cmath>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
@@ -1898,10 +1899,18 @@ private:
 
 	void shutdown_audio()
 	{
+		{
+			std::lock_guard<std::mutex> lock(obs_audio_callback_mutex_);
+			obs_audio_callback_shutdown_ = true;
+		}
 		if (obs_audio_source_) {
 			obs_source_remove_audio_capture_callback(obs_audio_source_, &NativeRuntime::obs_audio_capture_callback, this);
 			obs_source_release(obs_audio_source_);
 			obs_audio_source_ = nullptr;
+		}
+		{
+			std::unique_lock<std::mutex> lock(obs_audio_callback_mutex_);
+			obs_audio_callback_cv_.wait(lock, [this] { return obs_audio_callbacks_in_flight_ == 0; });
 		}
 		clear_audio_analysis_windows();
 		next_obs_audio_attach_attempt_ns_ = 0;
@@ -1915,9 +1924,10 @@ private:
 	{
 		UNUSED_PARAMETER(source);
 		auto *runtime = reinterpret_cast<NativeRuntime *>(param);
-		if (!runtime)
+		if (!runtime || !runtime->begin_obs_audio_callback())
 			return;
 		runtime->handle_obs_source_audio(audio_data, muted);
+		runtime->end_obs_audio_callback();
 	}
 
 	static void audio_input_callback(const int16_t *samples, size_t sample_count, uint16_t channels, uint32_t sample_rate,
@@ -2028,6 +2038,24 @@ private:
 		return &track_filled_[index];
 	}
 
+	bool begin_obs_audio_callback()
+	{
+		std::lock_guard<std::mutex> lock(obs_audio_callback_mutex_);
+		if (obs_audio_callback_shutdown_)
+			return false;
+		++obs_audio_callbacks_in_flight_;
+		return true;
+	}
+
+	void end_obs_audio_callback()
+	{
+		std::lock_guard<std::mutex> lock(obs_audio_callback_mutex_);
+		if (obs_audio_callbacks_in_flight_ > 0)
+			--obs_audio_callbacks_in_flight_;
+		if (obs_audio_callback_shutdown_ && obs_audio_callbacks_in_flight_ == 0)
+			obs_audio_callback_cv_.notify_all();
+	}
+
 private:
 	bool co_initialized_ = false;
 	MptImageBackend *image_backend_ = nullptr;
@@ -2055,6 +2083,10 @@ private:
 	enum speaker_layout obs_audio_speakers_ = SPEAKERS_UNKNOWN;
 	uint64_t next_obs_audio_attach_attempt_ns_ = 0;
 	bool obs_audio_attach_warning_logged_ = false;
+	std::mutex obs_audio_callback_mutex_;
+	std::condition_variable obs_audio_callback_cv_;
+	uint32_t obs_audio_callbacks_in_flight_ = 0;
+	bool obs_audio_callback_shutdown_ = false;
 	std::mutex audio_windows_mutex_;
 	std::deque<AudioAnalysisWindow> audio_windows_;
 	std::atomic<float> latest_rms_ {0.0f};
