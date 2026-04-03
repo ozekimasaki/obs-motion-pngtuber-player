@@ -3,7 +3,27 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ObsInstallRoot = Split-Path (Split-Path (Split-Path $ObsDllPath -Parent) -Parent) -Parent
+$DefaultObsInstallRoot = Split-Path (Split-Path (Split-Path $ObsDllPath -Parent) -Parent) -Parent
+$PortableObsInstallRoot = if ($env:RUNNER_TEMP) { Join-Path $env:RUNNER_TEMP 'obs-studio' } else { $DefaultObsInstallRoot }
+$script:ResolvedObsInstallRoot = $DefaultObsInstallRoot
+$script:ResolvedObsDllPath = $ObsDllPath
+
+function Set-ResolvedObsInstallRoot {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Root
+  )
+
+  $script:ResolvedObsInstallRoot = $Root
+  $script:ResolvedObsDllPath = Join-Path $Root 'bin\64bit\obs.dll'
+}
+
+function Publish-ObsInstallRoot {
+  Write-Host "Using OBS install root $script:ResolvedObsInstallRoot."
+  if ($env:GITHUB_ENV) {
+    Add-Content -Path $env:GITHUB_ENV -Value "OBS_INSTALL_ROOT=$script:ResolvedObsInstallRoot"
+  }
+}
 
 function Get-GitHubHeaders {
   $headers = @{
@@ -35,10 +55,11 @@ function Get-LatestObsRelease {
 }
 
 function Test-ObsInstalled {
-  return Test-Path $ObsDllPath
+  return Test-Path $script:ResolvedObsDllPath
 }
 
 function Install-ObsViaChocolatey {
+  Set-ResolvedObsInstallRoot -Root $DefaultObsInstallRoot
   if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
     Write-Host 'Chocolatey is not available on this runner.'
     return $false
@@ -54,6 +75,7 @@ function Install-ObsViaChocolatey {
 }
 
 function Install-ObsViaWinget {
+  Set-ResolvedObsInstallRoot -Root $DefaultObsInstallRoot
   if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
     Write-Host 'winget is not available on this runner.'
     return $false
@@ -85,6 +107,7 @@ function Install-ObsViaZipAsset {
   $extractRoot = Join-Path $env:RUNNER_TEMP 'mpt-obs-direct'
 
   try {
+    Set-ResolvedObsInstallRoot -Root $PortableObsInstallRoot
     if (Test-Path $archive) {
       Remove-Item -Path $archive -Force
     }
@@ -106,12 +129,12 @@ function Install-ObsViaZipAsset {
     }
 
     $sourceRoot = Split-Path (Split-Path (Split-Path $downloadedDll.FullName -Parent) -Parent) -Parent
-    Write-Host "Copying OBS runtime from $sourceRoot to $ObsInstallRoot."
-    if (Test-Path $ObsInstallRoot) {
-      Remove-Item -Path $ObsInstallRoot -Recurse -Force
+    Write-Host "Copying OBS runtime from $sourceRoot to $script:ResolvedObsInstallRoot."
+    if (Test-Path $script:ResolvedObsInstallRoot) {
+      Remove-Item -Path $script:ResolvedObsInstallRoot -Recurse -Force
     }
-    New-Item -Path $ObsInstallRoot -ItemType Directory -Force | Out-Null
-    Copy-Item -Path (Join-Path $sourceRoot '*') -Destination $ObsInstallRoot -Recurse -Force
+    New-Item -Path $script:ResolvedObsInstallRoot -ItemType Directory -Force | Out-Null
+    Copy-Item -Path (Join-Path $sourceRoot '*') -Destination $script:ResolvedObsInstallRoot -Recurse -Force
     return (Test-ObsInstalled)
   } catch {
     Write-Warning "Direct zip install failed: $($_.Exception.Message)"
@@ -134,6 +157,7 @@ function Install-ObsViaInstallerAsset {
   Write-Host "Trying OBS installer asset $($asset.name)."
   $installer = Join-Path $env:RUNNER_TEMP 'OBS-Studio-Installer.exe'
   try {
+    Set-ResolvedObsInstallRoot -Root $DefaultObsInstallRoot
     if (Test-Path $installer) {
       Remove-Item -Path $installer -Force
     }
@@ -185,3 +209,5 @@ if (Test-ObsInstalled) {
 if (-not (Test-ObsInstalled)) {
   throw 'obs.dll was not found after OBS Studio installation.'
 }
+
+Publish-ObsInstallRoot

@@ -32,7 +32,7 @@ jobs:
         run: .\ci\install-obs.ps1
 
       - name: Configure fallback build
-        run: cmake -S . -B build-win-fallback-vs
+        run: cmake -S . -B build-win-fallback-vs -DMPT_OBS_ROOT="$env:OBS_INSTALL_ROOT"
 
       - name: Build release plugin
         run: cmake --build build-win-fallback-vs --config Release
@@ -97,7 +97,7 @@ jobs:
           }
 
           New-Item -Path $portableRoot -ItemType Directory -Force | Out-Null
-          Copy-Item -Path 'C:\Program Files\obs-studio\*' -Destination $portableRoot -Recurse
+          Copy-Item -Path (Join-Path $env:OBS_INSTALL_ROOT '*') -Destination $portableRoot -Recurse
           New-Item -Path (Join-Path $portableRoot 'portable_mode.txt') -ItemType File -Force | Out-Null
           Copy-Item -Path (Join-Path $artifactRoot '*') -Destination $portableRoot -Recurse -Force
 
