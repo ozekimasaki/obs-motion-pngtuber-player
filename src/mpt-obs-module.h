@@ -396,7 +396,9 @@ EXPORT const struct audio_output_info *audio_output_get_info(const audio_t *audi
 EXPORT void obs_enum_sources(bool (*enum_proc)(void *, obs_source_t *), void *param);
 EXPORT obs_source_t *obs_get_source_by_uuid(const char *uuid);
 EXPORT void obs_source_release(obs_source_t *source);
+EXPORT const char *obs_source_get_id(const obs_source_t *source);
 EXPORT const char *obs_source_get_name(const obs_source_t *source);
+EXPORT const char *obs_source_get_unversioned_id(const obs_source_t *source);
 EXPORT const char *obs_source_get_uuid(const obs_source_t *source);
 EXPORT uint32_t obs_source_get_output_flags(const obs_source_t *source);
 EXPORT void obs_source_add_audio_capture_callback(obs_source_t *source, obs_source_audio_capture_t callback,
@@ -442,6 +444,7 @@ EXPORT obs_property_t *obs_properties_add_list(obs_properties_t *props, const ch
 					       enum obs_combo_type type, enum obs_combo_format format);
 EXPORT obs_property_t *obs_properties_add_bool(obs_properties_t *props, const char *name, const char *description);
 EXPORT void obs_property_set_modified_callback(obs_property_t *p, obs_property_modified_t modified);
+EXPORT void obs_property_set_visible(obs_property_t *p, bool visible);
 EXPORT void obs_property_list_clear(obs_property_t *p);
 EXPORT size_t obs_property_list_add_string(obs_property_t *p, const char *name, const char *val);
 EXPORT void obs_property_list_item_disable(obs_property_t *p, size_t idx, bool disabled);

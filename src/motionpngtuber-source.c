@@ -30,10 +30,12 @@
 #define PROP_TRACK_CALIBRATED_FILE "track_calibrated_file"
 #define PROP_RENDER_FPS "render_fps"
 #define PROP_STATUS_INFO "status_info"
+#define PROP_AUDIO_SYNC_INFO "audio_sync_info"
 #define PROP_AUDIO_SYNC_SOURCE_UUID "audio_sync_source_uuid"
 #define PROP_AUDIO_DEVICE_IDENTITY "audio_device_identity"
 #define PROP_AUDIO_DEVICE_INDEX "audio_device_index"
 #define PROP_VALID_POLICY "valid_policy"
+#define PROP_SHOW_ADVANCED "show_advanced"
 #define AUTO_OBS_AUDIO_SOURCE_SELECTION "__auto__"
 #define DIRECT_OBS_AUDIO_SOURCE_SELECTION "__direct__"
 #define FRAME_BUFFER_RESIZE_ERROR "Failed to resize video frame buffer."
@@ -71,6 +73,8 @@ struct motionpngtuber_source {
 
 	struct mpt_native_runtime *runtime;
 };
+
+static void motionpngtuber_refresh_property_visibility(obs_properties_t *props, obs_data_t *settings);
 
 static void replace_string(char **dst, const char *src)
 {
@@ -226,9 +230,23 @@ static bool should_auto_fill_related_paths(obs_data_t *settings)
 
 static bool motionpngtuber_loop_video_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
 {
-	UNUSED_PARAMETER(props);
 	UNUSED_PARAMETER(property);
 	auto_fill_related_paths(settings);
+	motionpngtuber_refresh_property_visibility(props, settings);
+	return true;
+}
+
+static bool motionpngtuber_audio_sync_source_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(property);
+	motionpngtuber_refresh_property_visibility(props, settings);
+	return true;
+}
+
+static bool motionpngtuber_show_advanced_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(property);
+	motionpngtuber_refresh_property_visibility(props, settings);
 	return true;
 }
 
@@ -267,6 +285,50 @@ static const char *canonicalize_audio_sync_source_uuid(const char *value)
 	return has_text(value) ? value : DIRECT_OBS_AUDIO_SOURCE_SELECTION;
 }
 
+static bool audio_sync_source_uses_direct_device(const char *value)
+{
+	return !has_text(value) || strcmp(value, AUTO_OBS_AUDIO_SOURCE_SELECTION) == 0 ||
+	       strcmp(value, DIRECT_OBS_AUDIO_SOURCE_SELECTION) == 0;
+}
+
+static bool advanced_settings_are_active(obs_data_t *settings)
+{
+	if (!settings)
+		return false;
+	if (has_text(obs_data_get_string(settings, PROP_TRACK_CALIBRATED_FILE)))
+		return true;
+	if (obs_data_get_int(settings, PROP_RENDER_FPS) > 0 && obs_data_get_int(settings, PROP_RENDER_FPS) != 30)
+		return true;
+
+	const char *valid_policy = obs_data_get_string(settings, PROP_VALID_POLICY);
+	return has_text(valid_policy) && strcmp(valid_policy, "hold") != 0;
+}
+
+static void motionpngtuber_refresh_property_visibility(obs_properties_t *props, obs_data_t *settings)
+{
+	if (!props)
+		return;
+
+	const char *audio_sync_source_uuid = settings ? obs_data_get_string(settings, PROP_AUDIO_SYNC_SOURCE_UUID)
+						      : AUTO_OBS_AUDIO_SOURCE_SELECTION;
+	bool show_advanced = settings && obs_data_get_bool(settings, PROP_SHOW_ADVANCED);
+	bool show_audio_device = audio_sync_source_uses_direct_device(audio_sync_source_uuid);
+
+	obs_property_t *audio_device = obs_properties_get(props, PROP_AUDIO_DEVICE_IDENTITY);
+	obs_property_t *track_calibrated = obs_properties_get(props, PROP_TRACK_CALIBRATED_FILE);
+	obs_property_t *render_fps = obs_properties_get(props, PROP_RENDER_FPS);
+	obs_property_t *valid_policy = obs_properties_get(props, PROP_VALID_POLICY);
+
+	if (audio_device)
+		obs_property_set_visible(audio_device, show_audio_device);
+	if (track_calibrated)
+		obs_property_set_visible(track_calibrated, show_advanced);
+	if (render_fps)
+		obs_property_set_visible(render_fps, show_advanced);
+	if (valid_policy)
+		obs_property_set_visible(valid_policy, show_advanced);
+}
+
 static bool contains_ascii_case_insensitive(const char *haystack, const char *needle)
 {
 	size_t needle_len = needle ? strlen(needle) : 0;
@@ -297,6 +359,20 @@ static int score_obs_audio_source_for_auto_follow(const obs_source_t *source)
 		return -1;
 
 	int score = 100;
+	const char *source_id = obs_source_get_unversioned_id(source);
+	if (!has_text(source_id))
+		source_id = obs_source_get_id(source);
+	if (contains_ascii_case_insensitive(source_id, "wasapi_input_capture"))
+		score += 250;
+	else if (contains_ascii_case_insensitive(source_id, "wasapi_process_output_capture"))
+		score += 125;
+	else if (contains_ascii_case_insensitive(source_id, "wasapi_output_capture"))
+		score += 100;
+	else if (contains_ascii_case_insensitive(source_id, "input_capture"))
+		score += 175;
+	else if (contains_ascii_case_insensitive(source_id, "output_capture"))
+		score += 75;
+
 	const char *name = obs_source_get_name(source);
 	if (contains_ascii_case_insensitive(name, "mic") ||
 	    contains_ascii_case_insensitive(name, "microphone") ||
@@ -665,12 +741,14 @@ static void motionpngtuber_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, PROP_AUDIO_DEVICE_INDEX, -1);
 	obs_data_set_default_string(settings, PROP_AUDIO_DEVICE_IDENTITY, "");
 	obs_data_set_default_string(settings, PROP_VALID_POLICY, "hold");
+	obs_data_set_default_bool(settings, PROP_SHOW_ADVANCED, false);
 }
 
 static obs_properties_t *motionpngtuber_properties(void *data)
 {
 	struct motionpngtuber_source *context = data;
 	obs_properties_t *props = obs_properties_create();
+	obs_data_t *property_settings = NULL;
 	obs_properties_set_flags(props, OBS_PROPERTIES_DEFER_UPDATE);
 
 	char *status_text = NULL;
@@ -692,30 +770,40 @@ static obs_properties_t *motionpngtuber_properties(void *data)
 				NULL, NULL);
 	obs_properties_add_path(props, PROP_TRACK_FILE, mpt_text("MotionPngTuberPlayer.TrackFile"), OBS_PATH_FILE,
 				"Track Files (*.json *.npz);;JSON Files (*.json);;NPZ Files (*.npz);;All Files (*.*)", NULL);
+	obs_property_t *show_advanced =
+		obs_properties_add_bool(props, PROP_SHOW_ADVANCED, mpt_text("MotionPngTuberPlayer.ShowAdvanced"));
+	obs_property_set_modified_callback(show_advanced, motionpngtuber_show_advanced_modified);
 	obs_properties_add_path(props, PROP_TRACK_CALIBRATED_FILE,
 				mpt_text("MotionPngTuberPlayer.TrackCalibratedFile"), OBS_PATH_FILE,
 				"Track Files (*.json *.npz);;JSON Files (*.json);;NPZ Files (*.npz);;All Files (*.*)", NULL);
 
 	obs_properties_add_int(props, PROP_RENDER_FPS, mpt_text("MotionPngTuberPlayer.RenderFps"), 1, 120, 1);
-	obs_properties_add_text(props, "audio_sync_info", mpt_text("MotionPngTuberPlayer.AudioSyncSourceInfo"),
+	obs_properties_add_text(props, PROP_AUDIO_SYNC_INFO, mpt_text("MotionPngTuberPlayer.AudioSyncSourceInfo"),
 				OBS_TEXT_INFO);
 	obs_property_t *audio_sync_source =
 		obs_properties_add_list(props, PROP_AUDIO_SYNC_SOURCE_UUID,
 					 mpt_text("MotionPngTuberPlayer.AudioSyncSource"),
 					 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	mpt_native_populate_obs_audio_sources(audio_sync_source);
+	obs_property_set_modified_callback(audio_sync_source, motionpngtuber_audio_sync_source_modified);
 	obs_property_t *audio_device = obs_properties_add_list(props, PROP_AUDIO_DEVICE_IDENTITY,
 						    mpt_text("MotionPngTuberPlayer.AudioDevice"),
 						    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	mpt_native_populate_audio_devices(audio_device);
-	obs_properties_add_int(props, PROP_AUDIO_DEVICE_INDEX, mpt_text("MotionPngTuberPlayer.AudioDeviceIndex"), -1,
-			       63, 1);
 
 	obs_property_t *policy = obs_properties_add_list(props, PROP_VALID_POLICY,
 						 mpt_text("MotionPngTuberPlayer.ValidPolicy"),
 						 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(policy, mpt_text("MotionPngTuberPlayer.Hold"), "hold");
 	obs_property_list_add_string(policy, mpt_text("MotionPngTuberPlayer.Strict"), "strict");
+	if (context && context->source) {
+		property_settings = obs_source_get_settings(context->source);
+		if (property_settings && advanced_settings_are_active(property_settings))
+			obs_data_set_bool(property_settings, PROP_SHOW_ADVANCED, true);
+	}
+	motionpngtuber_refresh_property_visibility(props, property_settings);
+	if (property_settings)
+		obs_data_release(property_settings);
 	return props;
 }
 

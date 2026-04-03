@@ -22,6 +22,7 @@ constexpr TextEntry kTextEntries[] = {
 	{"MotionPngTuberPlayer.MouthDir", "Mouth Directory", u8"\u53E3\u753B\u50CF\u30D5\u30A9\u30EB\u30C0\u30FC"},
 	{"MotionPngTuberPlayer.TrackFile", "Track File (.json or .npz)",
 	 u8"\u53E3\u30D1\u30AF\u30C8\u30E9\u30C3\u30AF (.json / .npz)"},
+	{"MotionPngTuberPlayer.ShowAdvanced", "Show Advanced Settings", u8"\u8A73\u7D30\u8A2D\u5B9A\u3092\u8868\u793A"},
 	{"MotionPngTuberPlayer.TrackCalibratedFile", "Track Calibrated File (.json or .npz)",
 	 u8"\u88DC\u6B63\u6E08\u307F\u53E3\u30D1\u30AF\u30C8\u30E9\u30C3\u30AF (.json / .npz)"},
 	{"MotionPngTuberPlayer.RenderFps", "Render FPS", u8"\u63CF\u753B\u30D5\u30EC\u30FC\u30E0\u30EC\u30FC\u30C8"},
