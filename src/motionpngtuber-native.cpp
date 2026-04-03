@@ -1826,6 +1826,7 @@ private:
 		clear_audio_analysis_windows();
 		latest_rms_.store(0.0f);
 		latest_zcr_.store(0.0f);
+		last_obs_audio_arrival_ns_.store(0ULL);
 		noise_floor_ = 0.0001f;
 		peak_level_ = 0.001f;
 		env_lp_ = 0.0f;
@@ -1924,6 +1925,7 @@ private:
 
 		uint64_t duration_ns = audio_frames_to_ns(obs_audio_sample_rate_, audio->frames);
 		queue_audio_analysis_window(audio->timestamp, audio->timestamp + duration_ns, rms, zcr);
+		last_obs_audio_arrival_ns_.store(os_gettime_ns());
 	}
 
 	void initialize_audio()
@@ -2053,9 +2055,11 @@ private:
 		if (obs_audio_follow_requested()) {
 			float rms = 0.0f;
 			float zcr = 0.0f;
-			if (try_attach_obs_audio_source(false) && find_audio_metrics_for_timestamp(output_timestamp_ns, rms, zcr))
+			if (try_attach_obs_audio_source(false) && find_audio_metrics_for_timestamp(output_timestamp_ns, rms, zcr)) {
 				apply_mouth_metrics(rms, zcr, false);
-			else if (direct_input_requested_) {
+			} else if (has_recent_obs_audio_activity()) {
+				apply_mouth_metrics(latest_rms_.load(), latest_zcr_.load(), false);
+			} else if (direct_input_requested_) {
 				ensure_direct_input_capture_started(false);
 				apply_mouth_metrics(latest_rms_.load(), latest_zcr_.load(), true);
 			} else {
@@ -2109,6 +2113,15 @@ private:
 			obs_audio_callback_cv_.notify_all();
 	}
 
+	bool has_recent_obs_audio_activity() const
+	{
+		const uint64_t last_arrival_ns = last_obs_audio_arrival_ns_.load();
+		if (last_arrival_ns == 0)
+			return false;
+		const uint64_t now_ns = os_gettime_ns();
+		return now_ns >= last_arrival_ns && (now_ns - last_arrival_ns) <= 250000000ULL;
+	}
+
 private:
 	bool co_initialized_ = false;
 	MptImageBackend *image_backend_ = nullptr;
@@ -2146,6 +2159,7 @@ private:
 	std::deque<AudioAnalysisWindow> audio_windows_;
 	std::atomic<float> latest_rms_ {0.0f};
 	std::atomic<float> latest_zcr_ {0.0f};
+	std::atomic<uint64_t> last_obs_audio_arrival_ns_ {0ULL};
 	float noise_floor_ = 0.0001f;
 	float peak_level_ = 0.001f;
 	float env_lp_ = 0.0f;
