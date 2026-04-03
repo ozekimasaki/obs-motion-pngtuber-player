@@ -12,7 +12,7 @@ The current release is **DLL-only**. You do not need to install Python.
 
 Download this file from GitHub Releases:
 
-- `MotionPngTuberPlayer-obs-plugin-windows-x64.zip`
+- `MotionPngTuberPlayer-obs-plugin-windows-x64-<version>.zip`
 
 ### 2. Close OBS
 
@@ -135,5 +135,5 @@ Local build:
 Local package:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\package-release.ps1 -PackageName MotionPngTuberPlayer-obs-plugin-windows-x64
+powershell -ExecutionPolicy Bypass -File .\package-release.ps1
 ```

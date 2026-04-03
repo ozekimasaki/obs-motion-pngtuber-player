@@ -93,13 +93,55 @@ function Get-CMakePath {
     throw 'cmake.exe was not found.'
 }
 
+function Get-ProjectVersion {
+    param(
+        [string]$Root
+    )
+
+    $cmakeListsPath = Join-Path $Root 'CMakeLists.txt'
+    if (-not (Test-Path $cmakeListsPath)) {
+        throw "CMakeLists.txt was not found: $cmakeListsPath"
+    }
+
+    $cmakeLists = Get-Content -Path $cmakeListsPath -Raw -Encoding utf8
+    $match = [regex]::Match($cmakeLists, 'project\(MotionPngTuberPlayer VERSION ([^ )]+)')
+    if (-not $match.Success) {
+        throw "Could not determine MotionPngTuberPlayer version from $cmakeListsPath"
+    }
+
+    return $match.Groups[1].Value
+}
+
+function Get-VersionFromTag {
+    param(
+        [string]$TagName
+    )
+
+    if ($TagName -match '^[vV](.+)$') {
+        return $Matches[1]
+    }
+
+    return $TagName
+}
+
 $ghCommand = Get-Command gh -ErrorAction Stop
 $pluginRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectVersion = Get-ProjectVersion -Root $pluginRoot
+$tagVersion = Get-VersionFromTag -TagName $Tag
+if ($tagVersion -ne $projectVersion) {
+    throw "Release tag '$Tag' does not match project version '$projectVersion'."
+}
+
 $buildDir = Join-Path $pluginRoot 'build-win-fallback-vs'
 $packageScript = Join-Path $pluginRoot 'package-release.ps1'
 $packageName = 'MotionPngTuberPlayer-obs-plugin-windows-x64'
-$zipPath = Join-Path $pluginRoot "dist\$packageName.zip"
-$hashPath = Join-Path $pluginRoot "dist\$packageName.sha256.txt"
+$zipBaseName = "$packageName-$projectVersion"
+$zipPath = Join-Path $pluginRoot "dist\$zipBaseName.zip"
+$hashPath = Join-Path $pluginRoot "dist\$zipBaseName.sha256.txt"
+$legacyHashPath = Join-Path $pluginRoot "dist\$packageName.sha256.txt"
+if ($legacyHashPath -ne $hashPath -and (Test-Path $legacyHashPath)) {
+    Remove-Item -Path $legacyHashPath -Force
+}
 
 Set-Location $pluginRoot
 
@@ -118,7 +160,7 @@ if (-not (Test-Path $zipPath)) {
 }
 
 $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-Set-Content -Path $hashPath -Value "$hash  $packageName.zip" -Encoding ascii
+Set-Content -Path $hashPath -Value "$hash  $zipBaseName.zip" -Encoding ascii
 
 git rev-parse -q --verify "refs/tags/$Tag" *> $null
 if ($LASTEXITCODE -ne 0) {

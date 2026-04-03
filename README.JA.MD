@@ -12,7 +12,7 @@
 
 GitHub Releases から次のファイルをダウンロードしてください。
 
-- `MotionPngTuberPlayer-obs-plugin-windows-x64.zip`
+- `MotionPngTuberPlayer-obs-plugin-windows-x64-<version>.zip`
 
 ### 2. OBS を閉じる
 
@@ -130,5 +130,5 @@ OBS で次の順に開きます。
 ローカル package:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\package-release.ps1 -PackageName MotionPngTuberPlayer-obs-plugin-windows-x64
+powershell -ExecutionPolicy Bypass -File .\package-release.ps1
 ```

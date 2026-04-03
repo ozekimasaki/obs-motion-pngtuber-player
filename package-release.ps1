@@ -80,7 +80,27 @@ function Get-CMakePath {
     throw 'cmake.exe was not found.'
 }
 
+function Get-ProjectVersion {
+    param(
+        [string]$Root
+    )
+
+    $cmakeListsPath = Join-Path $Root 'CMakeLists.txt'
+    if (-not (Test-Path $cmakeListsPath)) {
+        throw "CMakeLists.txt was not found: $cmakeListsPath"
+    }
+
+    $cmakeLists = Get-Content -Path $cmakeListsPath -Raw -Encoding utf8
+    $match = [regex]::Match($cmakeLists, 'project\(MotionPngTuberPlayer VERSION ([^ )]+)')
+    if (-not $match.Success) {
+        throw "Could not determine MotionPngTuberPlayer version from $cmakeListsPath"
+    }
+
+    return $match.Groups[1].Value
+}
+
 $pluginRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectVersion = Get-ProjectVersion -Root $pluginRoot
 
 if (-not (Test-IsWindows)) {
     throw 'package-release.ps1 currently supports Windows packaging only.'
@@ -114,7 +134,12 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$zipPath = "$packageRoot.zip"
+$zipBaseName = "{0}-{1}" -f (Split-Path $packageRoot -Leaf), $projectVersion
+$zipPath = Join-Path (Split-Path $packageRoot -Parent) "$zipBaseName.zip"
+$legacyZipPath = "$packageRoot.zip"
+if ($legacyZipPath -ne $zipPath -and (Test-Path $legacyZipPath)) {
+    Remove-Item -Path $legacyZipPath -Force
+}
 if (Test-Path $zipPath) {
     Remove-Item -Path $zipPath -Force
 }

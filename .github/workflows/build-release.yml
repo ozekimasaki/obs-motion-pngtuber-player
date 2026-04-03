@@ -285,26 +285,28 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y zip
+          release_zip="release/${WINDOWS_PACKAGE_NAME}-${GITHUB_REF_NAME#v}.zip"
           mkdir -p release
           (
             cd "release-artifacts/${WINDOWS_PACKAGE_NAME}"
-            zip -rq "../../release/${WINDOWS_PACKAGE_NAME}.zip" .
+            zip -rq "../../${release_zip}" .
           )
-          sha256sum "release/${WINDOWS_PACKAGE_NAME}.zip" > "release/${CHECKSUMS_NAME}"
+          sha256sum "${release_zip}" > "release/${CHECKSUMS_NAME}"
 
       - name: Publish GitHub release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           notes='Windows package is built and OBS smoke-tested in GitHub Actions before release publication.'
+          release_zip="release/${WINDOWS_PACKAGE_NAME}-${GITHUB_REF_NAME#v}.zip"
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
-              "release/${WINDOWS_PACKAGE_NAME}.zip#MotionPngTuberPlayer Windows x64 package" \
+              "${release_zip}#MotionPngTuberPlayer Windows x64 package" \
               "release/${CHECKSUMS_NAME}#SHA256 checksums" \
               --clobber
           else
             gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
-              "release/${WINDOWS_PACKAGE_NAME}.zip#MotionPngTuberPlayer Windows x64 package" \
+              "${release_zip}#MotionPngTuberPlayer Windows x64 package" \
               "release/${CHECKSUMS_NAME}#SHA256 checksums" \
               --title "MotionPngTuberPlayer ${GITHUB_REF_NAME}" \
               --generate-notes \
