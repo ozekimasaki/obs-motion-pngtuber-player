@@ -26,6 +26,13 @@ function Get-FfmpegPath {
       }
     }
   }
+  if ($env:RUNNER_TEMP) {
+    $downloadRoot = Join-Path $env:RUNNER_TEMP 'mpt-ffmpeg'
+    if (Test-Path $downloadRoot) {
+      $ffmpegCandidates += Get-ChildItem -Path $downloadRoot -Recurse -File -Filter 'ffmpeg.exe' -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty FullName
+    }
+  }
 
   return $ffmpegCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 }
@@ -60,6 +67,24 @@ function Install-FfmpegViaWinget {
   return $false
 }
 
+function Install-FfmpegViaDirectDownload {
+  $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/GyanD/codexffmpeg/releases/latest'
+  $asset = $release.assets | Where-Object { $_.name -match '^ffmpeg-.*-essentials_build\.zip$' } | Select-Object -First 1
+  if (-not $asset) {
+    throw 'Could not find a Windows ffmpeg essentials zip asset in the latest GyanD/codexffmpeg release.'
+  }
+
+  $zipPath = Join-Path $env:RUNNER_TEMP 'ffmpeg-essentials.zip'
+  $extractRoot = Join-Path $env:RUNNER_TEMP 'mpt-ffmpeg'
+  if (Test-Path $extractRoot) {
+    Remove-Item -Path $extractRoot -Recurse -Force
+  }
+
+  Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath
+  Expand-Archive -Path $zipPath -DestinationPath $extractRoot -Force
+  return $true
+}
+
 $ffmpeg = Get-FfmpegPath
 if (-not $ffmpeg -and $NoInstall) {
   throw 'ffmpeg.exe was not found and installation is disabled.'
@@ -72,6 +97,11 @@ if (-not $ffmpeg) {
 if (-not $ffmpeg) {
   Write-Warning 'Chocolatey install did not produce ffmpeg.exe. Trying winget.'
   Install-FfmpegViaWinget | Out-Null
+  $ffmpeg = Get-FfmpegPath
+}
+if (-not $ffmpeg) {
+  Write-Warning 'winget install did not produce ffmpeg.exe. Trying direct download.'
+  Install-FfmpegViaDirectDownload | Out-Null
   $ffmpeg = Get-FfmpegPath
 }
 
