@@ -211,3 +211,4 @@ if (-not (Test-ObsInstalled)) {
 }
 
 Publish-ObsInstallRoot
+$global:LASTEXITCODE = 0
