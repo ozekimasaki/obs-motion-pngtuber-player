@@ -503,6 +503,8 @@ static void *motionpngtuber_video_thread(void *data)
 static void motionpngtuber_update(void *data, obs_data_t *settings)
 {
 	struct motionpngtuber_source *context = data;
+	obs_data_t *source_settings = NULL;
+	obs_data_t *effective_settings = settings;
 	const char *loop_video = NULL;
 	const char *mouth_dir = NULL;
 	const char *track_file = NULL;
@@ -525,24 +527,31 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	long long saved_audio_device_index = -1;
 	bool requires_runtime_rebuild = false;
 
-	if (should_auto_fill_related_paths(settings))
-		auto_fill_related_paths(settings);
+	if (context->source) {
+		/* Video source updates can arrive as partial overlays, so read the merged source settings. */
+		source_settings = obs_source_get_settings(context->source);
+		if (source_settings)
+			effective_settings = source_settings;
+	}
 
-	loop_video = obs_data_get_string(settings, PROP_LOOP_VIDEO);
-	mouth_dir = obs_data_get_string(settings, PROP_MOUTH_DIR);
-	track_file = obs_data_get_string(settings, PROP_TRACK_FILE);
-	track_calibrated_file = obs_data_get_string(settings, PROP_TRACK_CALIBRATED_FILE);
+	if (should_auto_fill_related_paths(effective_settings))
+		auto_fill_related_paths(effective_settings);
+
+	loop_video = obs_data_get_string(effective_settings, PROP_LOOP_VIDEO);
+	mouth_dir = obs_data_get_string(effective_settings, PROP_MOUTH_DIR);
+	track_file = obs_data_get_string(effective_settings, PROP_TRACK_FILE);
+	track_calibrated_file = obs_data_get_string(effective_settings, PROP_TRACK_CALIBRATED_FILE);
 	audio_sync_source_uuid =
-		normalize_audio_sync_source_uuid(obs_data_get_string(settings, PROP_AUDIO_SYNC_SOURCE_UUID));
+		normalize_audio_sync_source_uuid(obs_data_get_string(effective_settings, PROP_AUDIO_SYNC_SOURCE_UUID));
 	resolved_audio_sync_source_uuid = resolve_audio_sync_source_uuid_for_runtime(audio_sync_source_uuid);
-	audio_device_identity = obs_data_get_string(settings, PROP_AUDIO_DEVICE_IDENTITY);
-	valid_policy = obs_data_get_string(settings, PROP_VALID_POLICY);
+	audio_device_identity = obs_data_get_string(effective_settings, PROP_AUDIO_DEVICE_IDENTITY);
+	valid_policy = obs_data_get_string(effective_settings, PROP_VALID_POLICY);
 	if (!has_text(valid_policy))
 		valid_policy = "hold";
-	render_fps = obs_data_get_int(settings, PROP_RENDER_FPS);
+	render_fps = obs_data_get_int(effective_settings, PROP_RENDER_FPS);
 	if (render_fps > 0)
 		normalized_render_fps = render_fps;
-	audio_device_index = obs_data_get_int(settings, PROP_AUDIO_DEVICE_INDEX);
+	audio_device_index = obs_data_get_int(effective_settings, PROP_AUDIO_DEVICE_INDEX);
 
 	pthread_mutex_lock(&context->mutex);
 	requires_runtime_rebuild = !strings_equal_nullable(context->loop_video, loop_video) ||
@@ -582,23 +591,15 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 		context->runtime_dirty = true;
 	pthread_mutex_unlock(&context->mutex);
 
-	write_canonical_settings(settings, saved_loop_video, saved_mouth_dir, saved_track_file,
+	write_canonical_settings(effective_settings, saved_loop_video, saved_mouth_dir, saved_track_file,
 				 saved_track_calibrated_file, saved_render_fps, saved_audio_sync_source_uuid,
 				 saved_audio_device_index,
 				 saved_audio_device_identity, saved_valid_policy);
-	if (context->source) {
-		/* obs_source_get_settings() returns source->context.settings with an extra ref. */
-		obs_data_t *source_settings = obs_source_get_settings(context->source);
-		if (source_settings) {
-			if (source_settings != settings) {
-				write_canonical_settings(source_settings, saved_loop_video, saved_mouth_dir,
-							 saved_track_file, saved_track_calibrated_file,
-							 saved_render_fps, saved_audio_sync_source_uuid,
-							 saved_audio_device_index,
-							 saved_audio_device_identity, saved_valid_policy);
-			}
-			obs_data_release(source_settings);
-		}
+	if (effective_settings != settings) {
+		write_canonical_settings(settings, saved_loop_video, saved_mouth_dir, saved_track_file,
+					 saved_track_calibrated_file, saved_render_fps,
+					 saved_audio_sync_source_uuid, saved_audio_device_index,
+					 saved_audio_device_identity, saved_valid_policy);
 	}
 
 	bfree(saved_loop_video);
@@ -609,6 +610,8 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	bfree(resolved_audio_sync_source_uuid);
 	bfree(saved_audio_device_identity);
 	bfree(saved_valid_policy);
+	if (source_settings)
+		obs_data_release(source_settings);
 }
 
 static void motionpngtuber_defaults(obs_data_t *settings)
