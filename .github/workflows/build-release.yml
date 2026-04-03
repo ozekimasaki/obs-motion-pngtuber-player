@@ -76,37 +76,7 @@ jobs:
           $python = "$env:RUNNER_TEMP\mpt-smoke-venv\Scripts\python.exe"
           & $python -m pip install --upgrade pip websocket-client pillow
 
-          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
-            if (Get-Command choco -ErrorAction SilentlyContinue) {
-              choco install ffmpeg --no-progress -y
-            } elseif (Get-Command winget -ErrorAction SilentlyContinue) {
-              winget install --id Gyan.FFmpeg --exact --source winget --accept-package-agreements --accept-source-agreements --silent
-            } else {
-              throw 'ffmpeg.exe is required for smoke asset generation, but no installer is available on this runner.'
-            }
-          }
-
-          $ffmpeg = (Get-Command ffmpeg -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue)
-          if (-not $ffmpeg) {
-            $ffmpegCandidates = @('C:\ProgramData\chocolatey\bin\ffmpeg.exe', 'C:\ffmpeg\bin\ffmpeg.exe')
-            if ($env:ChocolateyInstall) {
-              $ffmpegCandidates += (Join-Path $env:ChocolateyInstall 'bin\ffmpeg.exe')
-            }
-            if ($env:LOCALAPPDATA) {
-              $ffmpegCandidates += (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\ffmpeg.exe')
-              $wingetPackage = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages') -Directory -Filter 'Gyan.FFmpeg_*' -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending |
-                Select-Object -First 1
-              if ($wingetPackage) {
-                $ffmpegCandidates += Get-ChildItem -Path $wingetPackage.FullName -Recurse -File -Filter 'ffmpeg.exe' -ErrorAction SilentlyContinue |
-                  Select-Object -ExpandProperty FullName
-              }
-            }
-            $ffmpeg = $ffmpegCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          }
-          if (-not $ffmpeg) {
-            throw 'ffmpeg.exe was not found after installation.'
-          }
+          $ffmpeg = .\ci\resolve-ffmpeg.ps1
 
           & $python .\ci\generate-smoke-assets.py --output-dir "$env:RUNNER_TEMP\mpt-smoke-assets" --ffmpeg $ffmpeg
 
