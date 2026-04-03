@@ -505,6 +505,8 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	struct motionpngtuber_source *context = data;
 	obs_data_t *source_settings = NULL;
 	obs_data_t *effective_settings = settings;
+	obs_data_t *merged_settings = NULL;
+	obs_data_t *auto_fill_probe = NULL;
 	const char *loop_video = NULL;
 	const char *mouth_dir = NULL;
 	const char *track_file = NULL;
@@ -512,6 +514,7 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	const char *audio_sync_source_uuid = NULL;
 	const char *audio_device_identity = NULL;
 	const char *valid_policy = NULL;
+	const char *auto_filled_track_file = NULL;
 	char *saved_loop_video = NULL;
 	char *saved_mouth_dir = NULL;
 	char *saved_track_file = NULL;
@@ -525,6 +528,7 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	long long saved_render_fps = 30;
 	long long audio_device_index = -1;
 	long long saved_audio_device_index = -1;
+	bool preserve_current_track_file = false;
 	bool requires_runtime_rebuild = false;
 
 	if (context->source) {
@@ -534,26 +538,62 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 			effective_settings = source_settings;
 	}
 
-	if (should_auto_fill_related_paths(effective_settings))
-		auto_fill_related_paths(effective_settings);
+	merged_settings = obs_data_create();
+	if (effective_settings) {
+		obs_data_apply(merged_settings, effective_settings);
+	} else {
+		pthread_mutex_lock(&context->mutex);
+		write_canonical_settings(merged_settings, context->loop_video, context->mouth_dir, context->track_file,
+					 context->track_calibrated_file, context->render_fps, context->audio_sync_source_uuid,
+					 context->audio_device_index, context->audio_device_identity_json, context->valid_policy);
+		pthread_mutex_unlock(&context->mutex);
+		if (settings)
+			obs_data_apply(merged_settings, settings);
+	}
 
-	loop_video = obs_data_get_string(effective_settings, PROP_LOOP_VIDEO);
-	mouth_dir = obs_data_get_string(effective_settings, PROP_MOUTH_DIR);
-	track_file = obs_data_get_string(effective_settings, PROP_TRACK_FILE);
-	track_calibrated_file = obs_data_get_string(effective_settings, PROP_TRACK_CALIBRATED_FILE);
+	if (should_auto_fill_related_paths(merged_settings))
+		auto_fill_related_paths(merged_settings);
+
+	loop_video = obs_data_get_string(merged_settings, PROP_LOOP_VIDEO);
+	mouth_dir = obs_data_get_string(merged_settings, PROP_MOUTH_DIR);
+	track_file = obs_data_get_string(merged_settings, PROP_TRACK_FILE);
+	track_calibrated_file = obs_data_get_string(merged_settings, PROP_TRACK_CALIBRATED_FILE);
 	audio_sync_source_uuid =
-		normalize_audio_sync_source_uuid(obs_data_get_string(effective_settings, PROP_AUDIO_SYNC_SOURCE_UUID));
+		normalize_audio_sync_source_uuid(obs_data_get_string(merged_settings, PROP_AUDIO_SYNC_SOURCE_UUID));
 	resolved_audio_sync_source_uuid = resolve_audio_sync_source_uuid_for_runtime(audio_sync_source_uuid);
-	audio_device_identity = obs_data_get_string(effective_settings, PROP_AUDIO_DEVICE_IDENTITY);
-	valid_policy = obs_data_get_string(effective_settings, PROP_VALID_POLICY);
+	audio_device_identity = obs_data_get_string(merged_settings, PROP_AUDIO_DEVICE_IDENTITY);
+	valid_policy = obs_data_get_string(merged_settings, PROP_VALID_POLICY);
 	if (!has_text(valid_policy))
 		valid_policy = "hold";
-	render_fps = obs_data_get_int(effective_settings, PROP_RENDER_FPS);
+	render_fps = obs_data_get_int(merged_settings, PROP_RENDER_FPS);
 	if (render_fps > 0)
 		normalized_render_fps = render_fps;
-	audio_device_index = obs_data_get_int(effective_settings, PROP_AUDIO_DEVICE_INDEX);
+	audio_device_index = obs_data_get_int(merged_settings, PROP_AUDIO_DEVICE_INDEX);
+	if (has_text(loop_video)) {
+		auto_fill_probe = obs_data_create();
+		if (auto_fill_probe) {
+			obs_data_set_string(auto_fill_probe, PROP_LOOP_VIDEO, loop_video);
+			auto_fill_related_paths(auto_fill_probe);
+			auto_filled_track_file = obs_data_get_string(auto_fill_probe, PROP_TRACK_FILE);
+		}
+	}
 
 	pthread_mutex_lock(&context->mutex);
+	preserve_current_track_file =
+		has_text(context->loop_video) && has_text(loop_video) &&
+		strings_equal_nullable(context->loop_video, loop_video) &&
+		has_text(context->track_file) && has_text(track_file) &&
+		!strings_equal_nullable(context->track_file, track_file) &&
+		has_text(auto_filled_track_file) &&
+		strings_equal_nullable(track_file, auto_filled_track_file) &&
+		!strings_equal_nullable(context->track_file, auto_filled_track_file) &&
+		(context->render_fps != normalized_render_fps ||
+		 !strings_equal_nullable(context->valid_policy, valid_policy) ||
+		 !strings_equal_nullable(context->audio_sync_source_uuid, audio_sync_source_uuid) ||
+		 !strings_equal_nullable(context->audio_device_identity_json, audio_device_identity) ||
+		 context->audio_device_index != audio_device_index);
+	if (preserve_current_track_file)
+		track_file = context->track_file;
 	requires_runtime_rebuild = !strings_equal_nullable(context->loop_video, loop_video) ||
 				   !strings_equal_nullable(context->mouth_dir, mouth_dir) ||
 				   !strings_equal_nullable(context->track_file, track_file) ||
@@ -610,6 +650,10 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	bfree(resolved_audio_sync_source_uuid);
 	bfree(saved_audio_device_identity);
 	bfree(saved_valid_policy);
+	if (auto_fill_probe)
+		obs_data_release(auto_fill_probe);
+	if (merged_settings)
+		obs_data_release(merged_settings);
 	if (source_settings)
 		obs_data_release(source_settings);
 }
