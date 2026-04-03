@@ -26,6 +26,7 @@ function Get-DownloadHeaders {
 
 function Get-LatestObsRelease {
   try {
+    Write-Host 'Querying latest OBS Studio release metadata from GitHub.'
     return Invoke-RestMethod -Uri 'https://api.github.com/repos/obsproject/obs-studio/releases/latest' -Headers (Get-GitHubHeaders)
   } catch {
     Write-Warning "Failed to query the latest OBS Studio release: $($_.Exception.Message)"
@@ -79,6 +80,7 @@ function Install-ObsViaZipAsset {
     return $false
   }
 
+  Write-Host "Trying OBS zip asset $($asset.name)."
   $archive = Join-Path $env:RUNNER_TEMP 'OBS-Studio-Windows-x64.zip'
   $extractRoot = Join-Path $env:RUNNER_TEMP 'mpt-obs-direct'
 
@@ -90,7 +92,9 @@ function Install-ObsViaZipAsset {
       Remove-Item -Path $extractRoot -Recurse -Force
     }
 
+    Write-Host "Downloading OBS zip to $archive."
     Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $archive -Headers (Get-DownloadHeaders)
+    Write-Host "Expanding OBS zip into $extractRoot."
     Expand-Archive -Path $archive -DestinationPath $extractRoot -Force
 
     $downloadedDll = Get-ChildItem -Path $extractRoot -Recurse -Filter obs.dll |
@@ -102,6 +106,7 @@ function Install-ObsViaZipAsset {
     }
 
     $sourceRoot = Split-Path (Split-Path (Split-Path $downloadedDll.FullName -Parent) -Parent) -Parent
+    Write-Host "Copying OBS runtime from $sourceRoot to $ObsInstallRoot."
     if (Test-Path $ObsInstallRoot) {
       Remove-Item -Path $ObsInstallRoot -Recurse -Force
     }
@@ -126,13 +131,16 @@ function Install-ObsViaInstallerAsset {
     return $false
   }
 
+  Write-Host "Trying OBS installer asset $($asset.name)."
   $installer = Join-Path $env:RUNNER_TEMP 'OBS-Studio-Installer.exe'
   try {
     if (Test-Path $installer) {
       Remove-Item -Path $installer -Force
     }
 
+    Write-Host "Downloading OBS installer to $installer."
     Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installer -Headers (Get-DownloadHeaders)
+    Write-Host 'Launching OBS silent installer.'
     $process = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
     if ($process.ExitCode -eq 0) {
       return (Test-ObsInstalled)

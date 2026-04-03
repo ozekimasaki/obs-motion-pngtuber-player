@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(MotionPngTuberPlayer VERSION 0.1.38 LANGUAGES C CXX)
+project(MotionPngTuberPlayer VERSION 0.1.39 LANGUAGES C CXX)
 
 if(NOT WIN32)
   message(FATAL_ERROR "MotionPngTuberPlayer is currently supported only on Windows. Configure and build this project on a Windows host.")

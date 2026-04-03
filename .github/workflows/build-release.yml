@@ -29,8 +29,6 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install OBS Studio
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: .\ci\install-obs.ps1
 
       - name: Configure fallback build
@@ -64,8 +62,6 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install OBS Studio
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: .\ci\install-obs.ps1
 
       - name: Download Windows package
