@@ -30,6 +30,7 @@ struct mpt_native_runtime_config {
 	const char *audio_device_identity_json;
 	const char *audio_sync_source_uuid;
 	const char *valid_policy;
+	bool direct_input_requested;
 	long long audio_device_index;
 	long long render_fps;
 };

@@ -71,14 +71,11 @@ OBS で次の順に開きます。
 - `mouth_track.json`
 - `mouth_track_calibrated.json`
 
-### 4. 音声同期は基本そのままで OK
+### 4. `Audio Sync Source` で OBS 音声ソースを選ぶ
 
-`Audio Sync Source` は既定で **Auto** です。
+`Audio Sync Source` で、口パクを同期させたい OBS 音声ソースを選んでください。
 
-- 使える OBS 音声ソースがあれば、それに追従します
-- なければ直接入力デバイスへ自動でフォールバックします
-
-まずは既定値のまま使ってください。必要なときだけ `Direct Input Device` を選べば大丈夫です。
+多くの場合は、OBS で使っているマイク入力ソースを選べば大丈夫です。
 
 ## 対応しているファイル
 
@@ -108,7 +105,7 @@ OBS で次の順に開きます。
 
 - `track_file` が正しいか
 - `mouth_dir` が正しいか
-- マイクや OBS 音声ソースが正しく選ばれているか
+- 正しい OBS 音声ソースが選ばれているか
 
 ## 現在の対応範囲
 

@@ -65,9 +65,6 @@ struct AudioAnalysisWindow {
 	float zcr = 0.0f;
 };
 
-constexpr const char *kAutoObsAudioSourceSelection = "__auto__";
-constexpr const char *kDirectInputAudioSourceSelection = "__direct__";
-
 static std::wstring utf8_to_wide(const char *text)
 {
 	if (!text || !*text)
@@ -1524,7 +1521,8 @@ public:
 		  track_file_path_(config && config->track_file ? config->track_file : ""),
 		  track_calibrated_path_(config && config->track_calibrated_file ? config->track_calibrated_file : ""),
 		  obs_audio_source_uuid_(config && config->audio_sync_source_uuid ? config->audio_sync_source_uuid : ""),
-		  audio_identity_json_(config && config->audio_device_identity_json ? config->audio_device_identity_json : "")
+		  audio_identity_json_(config && config->audio_device_identity_json ? config->audio_device_identity_json : ""),
+		  direct_input_requested_(config ? config->direct_input_requested : false)
 	{
 		if (render_fps_ <= 0)
 			render_fps_ = 30;
@@ -1844,6 +1842,8 @@ private:
 
 	void ensure_direct_input_capture_started(bool log_failure)
 	{
+		if (!direct_input_requested_)
+			return;
 		if (audio_capture_)
 			return;
 
@@ -1931,7 +1931,8 @@ private:
 		if (obs_audio_follow_requested() && try_attach_obs_audio_source(true))
 			return;
 
-		ensure_direct_input_capture_started(true);
+		if (direct_input_requested_)
+			ensure_direct_input_capture_started(true);
 	}
 
 	void shutdown_audio()
@@ -2054,14 +2055,19 @@ private:
 			float zcr = 0.0f;
 			if (try_attach_obs_audio_source(false) && find_audio_metrics_for_timestamp(output_timestamp_ns, rms, zcr))
 				apply_mouth_metrics(rms, zcr, false);
-			else {
+			else if (direct_input_requested_) {
 				ensure_direct_input_capture_started(false);
 				apply_mouth_metrics(latest_rms_.load(), latest_zcr_.load(), true);
+			} else {
+				apply_mouth_metrics(0.0f, 0.0f, false);
 			}
 			return;
 		}
 
-		apply_mouth_metrics(latest_rms_.load(), latest_zcr_.load(), true);
+		if (direct_input_requested_)
+			apply_mouth_metrics(latest_rms_.load(), latest_zcr_.load(), true);
+		else
+			apply_mouth_metrics(0.0f, 0.0f, false);
 	}
 
 	const ImageBGRA &current_sprite() const
@@ -2123,6 +2129,7 @@ private:
 	std::string track_calibrated_path_;
 	std::string obs_audio_source_uuid_;
 	std::string audio_identity_json_;
+	bool direct_input_requested_ = false;
 	MptAudioCapture *audio_capture_ = nullptr;
 	obs_source_t *obs_audio_source_ = nullptr;
 	uint32_t obs_audio_sample_rate_ = 0;
@@ -2145,10 +2152,15 @@ private:
 	int mouth_shape_index_ = 0;
 };
 
+struct ObsAudioSourceListContext {
+	obs_property_t *list = nullptr;
+	size_t count = 0;
+};
+
 static bool enum_obs_audio_source_for_list(void *param, obs_source_t *source)
 {
-	auto *list = reinterpret_cast<obs_property_t *>(param);
-	if (!list || !source)
+	auto *context = reinterpret_cast<ObsAudioSourceListContext *>(param);
+	if (!context || !context->list || !source)
 		return true;
 	if ((obs_source_get_output_flags(source) & OBS_SOURCE_AUDIO) == 0)
 		return true;
@@ -2158,7 +2170,8 @@ static bool enum_obs_audio_source_for_list(void *param, obs_source_t *source)
 		return true;
 
 	const char *name = obs_source_get_name(source);
-	obs_property_list_add_string(list, has_text(name) ? name : uuid, uuid);
+	obs_property_list_add_string(context->list, has_text(name) ? name : uuid, uuid);
+	++context->count;
 	return true;
 }
 
@@ -2193,11 +2206,11 @@ extern "C" void mpt_native_populate_obs_audio_sources(obs_property_t *list)
 		return;
 
 	obs_property_list_clear(list);
-	obs_property_list_add_string(list, mpt_text("MotionPngTuberPlayer.AudioSyncSourceAuto"),
-				     kAutoObsAudioSourceSelection);
-	obs_property_list_add_string(list, mpt_text("MotionPngTuberPlayer.AudioSyncSourceNone"),
-				     kDirectInputAudioSourceSelection);
-	obs_enum_sources(&enum_obs_audio_source_for_list, list);
+	ObsAudioSourceListContext context;
+	context.list = list;
+	obs_enum_sources(&enum_obs_audio_source_for_list, &context);
+	if (context.count == 0)
+		add_disabled_list_item(list, mpt_text("MotionPngTuberPlayer.AudioSyncSourceNoneAvailable"));
 }
 
 extern "C" bool mpt_native_runtime_create(struct mpt_native_runtime **out_runtime,

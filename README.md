@@ -73,14 +73,11 @@ Typical sibling files are:
 - `mouth_track.json`
 - `mouth_track_calibrated.json`
 
-### 4. Leave audio sync on the default setting first
+### 4. Select the OBS audio source for lip sync
 
-`Audio Sync Source` defaults to **Auto**.
+Choose the OBS audio source that should drive lip sync in `Audio Sync Source`.
 
-- If a suitable OBS audio source exists, lip sync follows it
-- If not, the plugin falls back to the direct input device
-
-For most users, the default setting is the best place to start.
+For most users, this should be the microphone/input source they already use in OBS.
 
 ## Supported files
 
@@ -113,7 +110,7 @@ Check:
 
 - `track_file` is correct
 - `mouth_dir` is correct
-- your microphone or OBS audio source is selected correctly
+- the correct OBS audio source is selected
 
 ## Current scope
 

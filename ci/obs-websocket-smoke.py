@@ -18,7 +18,7 @@ from PIL import Image, ImageChops
 
 
 SOURCE_KIND = "motionpngtuber_player"
-PROP_AUDIO_DEVICE_IDENTITY = "audio_device_identity"
+PROP_AUDIO_SYNC_SOURCE_UUID = "audio_sync_source_uuid"
 SMOKE_CAPTURE_WIDTH = 320
 SMOKE_CAPTURE_HEIGHT = 240
 SCENE_COLLECTION_SAVE_SUFFIX = " Save Checkpoint"
@@ -592,10 +592,10 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
             "GetInputPropertiesListPropertyItems",
             {
                 "inputName": args.source_name,
-                "propertyName": PROP_AUDIO_DEVICE_IDENTITY,
+                "propertyName": PROP_AUDIO_SYNC_SOURCE_UUID,
             },
         ).get("propertyItems", [])
-        assert_true(bool(property_items), "audio device list should contain at least one entry")
+        assert_true(bool(property_items), "OBS audio source list should contain at least one entry")
 
         before_filter: Image.Image | None = None
         after_filter: Image.Image | None = None
@@ -682,7 +682,7 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
             if after_filter_extent is not None
             else None,
             "filter_difference_bbox": list(difference_bbox) if difference_bbox is not None else None,
-            "audio_device_items": len(property_items),
+            "audio_sync_source_items": len(property_items),
             "capture_target": capture_target,
             "source_active": source_activity.active,
             "source_showing": source_activity.showing,
