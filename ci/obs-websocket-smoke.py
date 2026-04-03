@@ -528,7 +528,7 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
     mouth_dir = asset_root / "mouth"
     control_image = mouth_dir / "open.png"
     auto_filled_track_file = asset_root / "mouth_track.json"
-    track_file = asset_root / "mouth_track.npz"
+    track_file = asset_root / "mouth_track_nyapan.npz"
     crop = CropSettings()
 
     client = ObsWebSocketClient(args.url, args.password)
@@ -659,11 +659,13 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         time.sleep(1.0)
 
         updated_settings = get_input_settings(client, args.source_name)
+        assert_equal(normalize_path(str(track_file)), normalize_path(str(updated_settings.get("track_file", ""))), "updated track_file")
         assert_equal(int(updated_settings.get("render_fps", 0)), 24, "updated render_fps")
         assert_equal(str(updated_settings.get("valid_policy", "")), "strict", "updated valid_policy")
 
         force_save_scene_collection(client, args.scene_collection_name)
         reloaded_settings = get_input_settings(client, args.source_name)
+        assert_equal(normalize_path(str(track_file)), normalize_path(str(reloaded_settings.get("track_file", ""))), "reloaded track_file")
         assert_equal(int(reloaded_settings.get("render_fps", 0)), 24, "reloaded render_fps")
         assert_equal(str(reloaded_settings.get("valid_policy", "")), "strict", "reloaded valid_policy")
         reloaded_filter_settings = get_filter_settings(client, args.source_name, args.filter_name)
@@ -705,7 +707,7 @@ def run_reopen_phase(args: argparse.Namespace) -> dict[str, object]:
     loop_video = asset_root / "loop.mp4"
     mouth_dir = asset_root / "mouth"
     control_image = mouth_dir / "open.png"
-    track_file = asset_root / "mouth_track.npz"
+    track_file = asset_root / "mouth_track_nyapan.npz"
     crop = CropSettings()
 
     client = ObsWebSocketClient(args.url, args.password)

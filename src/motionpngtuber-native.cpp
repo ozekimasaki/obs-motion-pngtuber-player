@@ -34,6 +34,7 @@
 #include <utility>
 #include <vector>
 
+#include <windows.h>
 #include <objbase.h>
 
 struct mpt_native_runtime {
@@ -558,6 +559,80 @@ static bool read_binary_file_utf8(const std::string &path, std::vector<uint8_t> 
 	return input.good() || input.eof();
 }
 
+using ZlibByte = uint8_t;
+using ZlibUInt = unsigned int;
+using ZlibULong = unsigned long;
+using ZlibVoidPtr = void *;
+using ZlibAllocFunc = ZlibVoidPtr(__cdecl *)(ZlibVoidPtr opaque, ZlibUInt items, ZlibUInt size);
+using ZlibFreeFunc = void(__cdecl *)(ZlibVoidPtr opaque, ZlibVoidPtr address);
+
+struct ZlibInternalState;
+
+struct ZlibStream {
+	const ZlibByte *next_in = nullptr;
+	ZlibUInt avail_in = 0;
+	ZlibULong total_in = 0;
+	ZlibByte *next_out = nullptr;
+	ZlibUInt avail_out = 0;
+	ZlibULong total_out = 0;
+	char *msg = nullptr;
+	ZlibInternalState *state = nullptr;
+	ZlibAllocFunc zalloc = nullptr;
+	ZlibFreeFunc zfree = nullptr;
+	ZlibVoidPtr opaque = nullptr;
+	int data_type = 0;
+	ZlibULong adler = 0;
+	ZlibULong reserved = 0;
+};
+
+using ZlibVersionFn = const char *(__cdecl *)(void);
+using ZlibInflateInit2Fn = int(__cdecl *)(ZlibStream *stream, int window_bits, const char *version, int stream_size);
+using ZlibInflateFn = int(__cdecl *)(ZlibStream *stream, int flush);
+using ZlibInflateEndFn = int(__cdecl *)(ZlibStream *stream);
+
+struct ZlibApi {
+	HMODULE module = nullptr;
+	ZlibVersionFn version = nullptr;
+	ZlibInflateInit2Fn inflate_init2 = nullptr;
+	ZlibInflateFn inflate = nullptr;
+	ZlibInflateEndFn inflate_end = nullptr;
+	bool available = false;
+	std::string error;
+
+	~ZlibApi()
+	{
+		if (module)
+			FreeLibrary(module);
+	}
+};
+
+static ZlibApi &get_zlib_api()
+{
+	static ZlibApi api;
+	static std::once_flag once;
+	std::call_once(once, []() {
+		api.module = LoadLibraryW(L"zlib.dll");
+		if (!api.module) {
+			api.error = "compressed NPZ members require OBS zlib.dll";
+			return;
+		}
+
+		api.version = reinterpret_cast<ZlibVersionFn>(GetProcAddress(api.module, "zlibVersion"));
+		api.inflate_init2 = reinterpret_cast<ZlibInflateInit2Fn>(GetProcAddress(api.module, "inflateInit2_"));
+		api.inflate = reinterpret_cast<ZlibInflateFn>(GetProcAddress(api.module, "inflate"));
+		api.inflate_end = reinterpret_cast<ZlibInflateEndFn>(GetProcAddress(api.module, "inflateEnd"));
+		if (!api.version || !api.inflate_init2 || !api.inflate || !api.inflate_end) {
+			api.error = "OBS zlib.dll does not export the required inflate symbols";
+			FreeLibrary(api.module);
+			api.module = nullptr;
+			return;
+		}
+
+		api.available = true;
+	});
+	return api;
+}
+
 struct NpzEntryView {
 	std::string name;
 	uint16_t compression_method = 0;
@@ -573,8 +648,11 @@ struct NpyArrayView {
 	size_t item_size = 0;
 	bool fortran_order = false;
 	std::vector<size_t> shape;
+	std::vector<size_t> logical_strides;
+	std::vector<size_t> storage_strides;
 	const uint8_t *data = nullptr;
 	size_t data_size = 0;
+	bool needs_byte_swap = false;
 };
 
 static uint16_t read_le16(const uint8_t *data)
@@ -585,6 +663,13 @@ static uint16_t read_le16(const uint8_t *data)
 static uint32_t read_le32(const uint8_t *data)
 {
 	return (uint32_t)data[0] | ((uint32_t)data[1] << 8) | ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
+}
+
+static uint64_t read_le64(const uint8_t *data)
+{
+	return (uint64_t)data[0] | ((uint64_t)data[1] << 8) | ((uint64_t)data[2] << 16) | ((uint64_t)data[3] << 24) |
+	       ((uint64_t)data[4] << 32) | ((uint64_t)data[5] << 40) | ((uint64_t)data[6] << 48) |
+	       ((uint64_t)data[7] << 56);
 }
 
 static bool npy_find_value_start(const std::string &header, const char *name, size_t &value_pos)
@@ -703,6 +788,46 @@ static bool npy_try_total_elements(const NpyArrayView &array, size_t &total)
 	return true;
 }
 
+static bool host_is_little_endian()
+{
+	const uint16_t value = 1;
+	return *reinterpret_cast<const uint8_t *>(&value) == 1U;
+}
+
+static bool npy_requires_byte_swap(char byte_order)
+{
+	if (byte_order == '=' || byte_order == '|')
+		return false;
+	return (byte_order == '<') != host_is_little_endian();
+}
+
+static bool npy_try_build_strides(const std::vector<size_t> &shape, bool fortran_order, std::vector<size_t> &logical_strides,
+				  std::vector<size_t> &storage_strides)
+{
+	logical_strides.assign(shape.size(), 1U);
+	storage_strides.assign(shape.size(), 1U);
+
+	size_t logical_stride = 1U;
+	for (size_t dim = shape.size(); dim-- > 0;) {
+		logical_strides[dim] = logical_stride;
+		if (!safe_multiply_size(logical_stride, shape[dim], logical_stride))
+			return false;
+	}
+
+	if (!fortran_order) {
+		storage_strides = logical_strides;
+		return true;
+	}
+
+	size_t storage_stride = 1U;
+	for (size_t dim = 0; dim < shape.size(); ++dim) {
+		storage_strides[dim] = storage_stride;
+		if (!safe_multiply_size(storage_stride, shape[dim], storage_stride))
+			return false;
+	}
+	return true;
+}
+
 static const NpzEntryView *find_npz_entry(const std::vector<NpzEntryView> &entries, const char *name)
 {
 	for (const auto &entry : entries) {
@@ -712,55 +837,270 @@ static const NpzEntryView *find_npz_entry(const std::vector<NpzEntryView> &entri
 	return nullptr;
 }
 
+struct ZipCentralDirectoryInfo {
+	uint64_t offset = 0;
+	uint64_t size = 0;
+	uint64_t entry_count = 0;
+};
+
+static bool find_zip_end_of_central_directory(const std::vector<uint8_t> &archive, size_t &offset_out, std::string &error)
+{
+	offset_out = 0;
+	if (archive.size() < 22U) {
+		error = "NPZ archive is truncated";
+		return false;
+	}
+
+	size_t min_offset = 0;
+	const size_t max_comment = 0xffffU;
+	if (archive.size() > 22U + max_comment)
+		min_offset = archive.size() - (22U + max_comment);
+
+	for (size_t offset = archive.size() - 22U;; --offset) {
+		if (read_le32(&archive[offset]) == 0x06054b50U) {
+			uint16_t comment_length = read_le16(&archive[offset + 20U]);
+			if (offset + 22U + (size_t)comment_length == archive.size()) {
+				offset_out = offset;
+				return true;
+			}
+		}
+
+		if (offset == min_offset)
+			break;
+	}
+
+	error = "NPZ does not contain a valid ZIP end of central directory";
+	return false;
+}
+
+static bool parse_zip64_extra_field(const uint8_t *extra, size_t extra_size, bool need_uncompressed, bool need_compressed,
+				    bool need_local_header_offset, uint64_t &uncompressed_size,
+				    uint64_t &compressed_size, uint64_t &local_header_offset)
+{
+	size_t offset = 0;
+	while (offset + 4U <= extra_size) {
+		uint16_t header_id = read_le16(extra + offset);
+		uint16_t data_size = read_le16(extra + offset + 2U);
+		offset += 4U;
+		if (offset + (size_t)data_size > extra_size)
+			return false;
+		if (header_id != 0x0001U) {
+			offset += (size_t)data_size;
+			continue;
+		}
+
+		size_t value_offset = offset;
+		size_t value_end = offset + (size_t)data_size;
+		if (need_uncompressed) {
+			if (value_offset + 8U > value_end)
+				return false;
+			uncompressed_size = read_le64(extra + value_offset);
+			value_offset += 8U;
+		}
+		if (need_compressed) {
+			if (value_offset + 8U > value_end)
+				return false;
+			compressed_size = read_le64(extra + value_offset);
+			value_offset += 8U;
+		}
+		if (need_local_header_offset) {
+			if (value_offset + 8U > value_end)
+				return false;
+			local_header_offset = read_le64(extra + value_offset);
+		}
+		return true;
+	}
+
+	return !need_uncompressed && !need_compressed && !need_local_header_offset;
+}
+
+static bool resolve_zip_central_directory_info(const std::vector<uint8_t> &archive, ZipCentralDirectoryInfo &info,
+					       std::string &error)
+{
+	info = ZipCentralDirectoryInfo {};
+
+	size_t eocd_offset = 0;
+	if (!find_zip_end_of_central_directory(archive, eocd_offset, error))
+		return false;
+
+	uint16_t disk_number = read_le16(&archive[eocd_offset + 4U]);
+	uint16_t start_disk_number = read_le16(&archive[eocd_offset + 6U]);
+	uint64_t entry_count = read_le16(&archive[eocd_offset + 10U]);
+	uint64_t central_directory_size = read_le32(&archive[eocd_offset + 12U]);
+	uint64_t central_directory_offset = read_le32(&archive[eocd_offset + 16U]);
+	if (disk_number != 0U || start_disk_number != 0U) {
+		error = "split ZIP archives cannot be read";
+		return false;
+	}
+
+	if (entry_count == 0xffffU || central_directory_size == 0xffffffffU || central_directory_offset == 0xffffffffU) {
+		if (eocd_offset < 20U || read_le32(&archive[eocd_offset - 20U]) != 0x07064b50U) {
+			error = "ZIP64 NPZ archives are missing a locator";
+			return false;
+		}
+
+		uint64_t zip64_eocd_offset = read_le64(&archive[eocd_offset - 12U]);
+		if (zip64_eocd_offset > (uint64_t)std::numeric_limits<size_t>::max()) {
+			error = "ZIP64 end of central directory is too large";
+			return false;
+		}
+
+		size_t zip64_record_offset = (size_t)zip64_eocd_offset;
+		if (zip64_record_offset + 56U > archive.size() ||
+		    read_le32(&archive[zip64_record_offset]) != 0x06064b50U) {
+			error = "ZIP64 end of central directory is invalid";
+			return false;
+		}
+
+		uint64_t zip64_record_size = read_le64(&archive[zip64_record_offset + 4U]);
+		if (zip64_record_size > (uint64_t)archive.size() ||
+		    zip64_record_offset + 12U + (size_t)zip64_record_size > archive.size()) {
+			error = "ZIP64 end of central directory is truncated";
+			return false;
+		}
+
+		entry_count = read_le64(&archive[zip64_record_offset + 32U]);
+		central_directory_size = read_le64(&archive[zip64_record_offset + 40U]);
+		central_directory_offset = read_le64(&archive[zip64_record_offset + 48U]);
+	}
+
+	if (entry_count == 0) {
+		error = "NPZ archive does not contain any readable members";
+		return false;
+	}
+	if (central_directory_offset > (uint64_t)std::numeric_limits<size_t>::max() ||
+	    central_directory_size > (uint64_t)std::numeric_limits<size_t>::max()) {
+		error = "NPZ central directory is too large";
+		return false;
+	}
+	if ((size_t)central_directory_offset > archive.size() ||
+	    (size_t)central_directory_size > archive.size() - (size_t)central_directory_offset) {
+		error = "NPZ central directory is truncated";
+		return false;
+	}
+
+	info.offset = central_directory_offset;
+	info.size = central_directory_size;
+	info.entry_count = entry_count;
+	return true;
+}
+
+static bool resolve_npz_local_entry_data(const std::vector<uint8_t> &archive, size_t local_header_offset,
+					 const std::string &expected_name, size_t &data_offset, std::string &error)
+{
+	data_offset = 0;
+	if (local_header_offset + 30U > archive.size()) {
+		error = "NPZ local header is truncated";
+		return false;
+	}
+	if (read_le32(&archive[local_header_offset]) != 0x04034b50U) {
+		error = "NPZ local header is invalid";
+		return false;
+	}
+
+	uint16_t name_length = read_le16(&archive[local_header_offset + 26U]);
+	uint16_t extra_length = read_le16(&archive[local_header_offset + 28U]);
+	size_t name_offset = local_header_offset + 30U;
+	data_offset = name_offset + (size_t)name_length + (size_t)extra_length;
+	if (name_offset + (size_t)name_length > archive.size() || data_offset > archive.size()) {
+		error = "NPZ local header is truncated";
+		return false;
+	}
+	if (expected_name.size() != (size_t)name_length ||
+	    memcmp(&archive[name_offset], expected_name.data(), (size_t)name_length) != 0) {
+		error = "NPZ central directory does not match local headers";
+		return false;
+	}
+
+	return true;
+}
+
 static bool parse_npz_entries(const std::vector<uint8_t> &archive, std::vector<NpzEntryView> &entries, std::string &error)
 {
 	entries.clear();
-	size_t offset = 0;
-	while (offset + 4U <= archive.size()) {
-		uint32_t signature = read_le32(&archive[offset]);
-		if (signature == 0x02014b50U || signature == 0x06054b50U)
-			break;
-		if (signature != 0x04034b50U) {
-			error = "NPZ does not contain a valid ZIP local header";
+
+	ZipCentralDirectoryInfo directory_info;
+	if (!resolve_zip_central_directory_info(archive, directory_info, error))
+		return false;
+
+	if (directory_info.entry_count > (uint64_t)std::numeric_limits<size_t>::max()) {
+		error = "NPZ archive contains too many members";
+		return false;
+	}
+	entries.reserve((size_t)directory_info.entry_count);
+
+	size_t offset = (size_t)directory_info.offset;
+	size_t directory_end = offset + (size_t)directory_info.size;
+	for (uint64_t index = 0; index < directory_info.entry_count; ++index) {
+		if (offset + 46U > directory_end || offset + 46U > archive.size()) {
+			error = "NPZ central directory is truncated";
 			return false;
 		}
-		if (offset + 30U > archive.size()) {
-			error = "NPZ local header is truncated";
+		if (read_le32(&archive[offset]) != 0x02014b50U) {
+			error = "NPZ central directory is invalid";
 			return false;
 		}
 
-		uint16_t flags = read_le16(&archive[offset + 6U]);
-		uint16_t compression_method = read_le16(&archive[offset + 8U]);
-		uint32_t compressed_size = read_le32(&archive[offset + 18U]);
-		uint32_t uncompressed_size = read_le32(&archive[offset + 22U]);
-		uint16_t name_length = read_le16(&archive[offset + 26U]);
-		uint16_t extra_length = read_le16(&archive[offset + 28U]);
+		uint16_t flags = read_le16(&archive[offset + 8U]);
+		uint16_t compression_method = read_le16(&archive[offset + 10U]);
+		uint32_t compressed_size32 = read_le32(&archive[offset + 20U]);
+		uint32_t uncompressed_size32 = read_le32(&archive[offset + 24U]);
+		uint16_t name_length = read_le16(&archive[offset + 28U]);
+		uint16_t extra_length = read_le16(&archive[offset + 30U]);
+		uint16_t comment_length = read_le16(&archive[offset + 32U]);
+		uint32_t local_header_offset32 = read_le32(&archive[offset + 42U]);
 
-		if ((flags & 0x0008U) != 0) {
-			error = "NPZ uses ZIP data descriptors, which are not supported";
+		if ((flags & 0x0001U) != 0) {
+			error = "encrypted NPZ members cannot be read";
 			return false;
 		}
 
-		size_t name_offset = offset + 30U;
-		size_t data_offset = name_offset + (size_t)name_length + (size_t)extra_length;
-		if (name_offset + (size_t)name_length > archive.size() || data_offset > archive.size()) {
-			error = "NPZ local header is truncated";
+		size_t name_offset = offset + 46U;
+		size_t extra_offset = name_offset + (size_t)name_length;
+		size_t comment_offset = extra_offset + (size_t)extra_length;
+		size_t next_offset = comment_offset + (size_t)comment_length;
+		if (name_offset + (size_t)name_length > directory_end || extra_offset > directory_end || next_offset > directory_end ||
+		    next_offset > archive.size()) {
+			error = "NPZ central directory is truncated";
 			return false;
 		}
-		if (data_offset + (size_t)compressed_size > archive.size()) {
+
+		uint64_t compressed_size = compressed_size32;
+		uint64_t uncompressed_size = uncompressed_size32;
+		uint64_t local_header_offset = local_header_offset32;
+		bool need_uncompressed = uncompressed_size32 == 0xffffffffU;
+		bool need_compressed = compressed_size32 == 0xffffffffU;
+		bool need_local_offset = local_header_offset32 == 0xffffffffU;
+		if (!parse_zip64_extra_field(&archive[extra_offset], extra_length, need_uncompressed, need_compressed,
+					     need_local_offset, uncompressed_size, compressed_size,
+					     local_header_offset)) {
+			error = "NPZ ZIP64 extra data is truncated";
+			return false;
+		}
+		if (compressed_size > (uint64_t)std::numeric_limits<size_t>::max() ||
+		    uncompressed_size > (uint64_t)std::numeric_limits<size_t>::max() ||
+		    local_header_offset > (uint64_t)std::numeric_limits<size_t>::max()) {
+			error = "NPZ member is too large";
+			return false;
+		}
+
+		std::string entry_name(reinterpret_cast<const char *>(&archive[name_offset]), name_length);
+		size_t data_offset = 0;
+		if (!resolve_npz_local_entry_data(archive, (size_t)local_header_offset, entry_name, data_offset, error))
+			return false;
+		if ((size_t)compressed_size > archive.size() - data_offset) {
 			error = "NPZ member data is truncated";
 			return false;
 		}
 
 		NpzEntryView entry;
-		entry.name.assign(reinterpret_cast<const char *>(&archive[name_offset]), name_length);
+		entry.name = std::move(entry_name);
 		entry.compression_method = compression_method;
 		entry.data = archive.data() + data_offset;
-		entry.compressed_size = compressed_size;
-		entry.uncompressed_size = uncompressed_size;
+		entry.compressed_size = (size_t)compressed_size;
+		entry.uncompressed_size = (size_t)uncompressed_size;
 		entries.push_back(entry);
-
-		offset = data_offset + (size_t)compressed_size;
+		offset = next_offset;
 	}
 
 	if (entries.empty()) {
@@ -770,48 +1110,114 @@ static bool parse_npz_entries(const std::vector<uint8_t> &archive, std::vector<N
 	return true;
 }
 
-static bool parse_npy_array(const NpzEntryView &entry, NpyArrayView &array, std::string &error)
+static bool inflate_npz_member(const NpzEntryView &entry, std::vector<uint8_t> &output, std::string &error)
 {
-	if (entry.compression_method != 0) {
-		error = "compressed NPZ members are not supported yet";
+	if (entry.compression_method != 8U) {
+		error = "NPZ member uses an unreadable ZIP compression method";
 		return false;
 	}
-	if (!entry.data || entry.compressed_size < 10U) {
+	if (!entry.data) {
+		error = "NPZ member data is truncated";
+		return false;
+	}
+	if (entry.compressed_size > (size_t)std::numeric_limits<ZlibUInt>::max() ||
+	    entry.uncompressed_size > (size_t)std::numeric_limits<ZlibUInt>::max()) {
+		error = "NPZ member is too large";
+		return false;
+	}
+
+	ZlibApi &api = get_zlib_api();
+	if (!api.available) {
+		error = api.error;
+		return false;
+	}
+
+	const char *version = api.version ? api.version() : nullptr;
+	if (!version || !*version) {
+		error = "OBS zlib.dll did not report a version";
+		return false;
+	}
+
+	output.assign(entry.uncompressed_size, 0);
+	ZlibStream stream {};
+	stream.next_in = entry.data;
+	stream.avail_in = (ZlibUInt)entry.compressed_size;
+	stream.next_out = output.empty() ? nullptr : output.data();
+	stream.avail_out = (ZlibUInt)output.size();
+
+	const int z_ok = 0;
+	const int z_stream_end = 1;
+	const int z_finish = 4;
+	const int raw_deflate_window_bits = -15;
+
+	if (api.inflate_init2(&stream, raw_deflate_window_bits, version, sizeof(stream)) != z_ok) {
+		error = "failed to initialize NPZ decompression";
+		return false;
+	}
+
+	int inflate_status = api.inflate(&stream, z_finish);
+	int end_status = api.inflate_end(&stream);
+	if (inflate_status != z_stream_end || end_status != z_ok || stream.total_out != (ZlibULong)entry.uncompressed_size) {
+		error = "failed to decompress NPZ member";
+		return false;
+	}
+
+	return true;
+}
+
+static bool parse_npy_array(const NpzEntryView &entry, NpyArrayView &array, std::vector<uint8_t> &owned_member_data,
+			    std::string &error)
+{
+	array = NpyArrayView {};
+	owned_member_data.clear();
+
+	const uint8_t *member_data = entry.data;
+	size_t member_size = entry.compressed_size;
+	if (entry.compression_method == 8U) {
+		if (!inflate_npz_member(entry, owned_member_data, error))
+			return false;
+		member_data = owned_member_data.data();
+		member_size = owned_member_data.size();
+	} else if (entry.compression_method != 0U) {
+		error = "NPZ member uses an unreadable ZIP compression method";
+		return false;
+	}
+	if (!member_data || member_size < 10U) {
 		error = "NPY member is truncated";
 		return false;
 	}
-	if (!(entry.data[0] == 0x93 && entry.data[1] == 'N' && entry.data[2] == 'U' && entry.data[3] == 'M' &&
-	      entry.data[4] == 'P' && entry.data[5] == 'Y')) {
+	if (!(member_data[0] == 0x93 && member_data[1] == 'N' && member_data[2] == 'U' && member_data[3] == 'M' &&
+	      member_data[4] == 'P' && member_data[5] == 'Y')) {
 		error = "NPZ member is not an NPY array";
 		return false;
 	}
 
-	uint8_t major = entry.data[6];
+	uint8_t major = member_data[6];
 	size_t header_size_field = 0;
 	size_t header_length = 0;
 	if (major == 1) {
 		header_size_field = 2;
-		header_length = read_le16(entry.data + 8);
+		header_length = read_le16(member_data + 8);
 	} else if (major == 2 || major == 3) {
-		if (entry.compressed_size < 12U) {
+		if (member_size < 12U) {
 			error = "NPY member is truncated";
 			return false;
 		}
 		header_size_field = 4;
-		header_length = read_le32(entry.data + 8);
+		header_length = read_le32(member_data + 8);
 	} else {
-		error = "unsupported NPY format version";
+		error = "NPY format version could not be read";
 		return false;
 	}
 
 	size_t header_offset = 8U + header_size_field;
-	if (header_length > entry.compressed_size - header_offset) {
+	if (header_offset > member_size || header_length > member_size - header_offset) {
 		error = "NPY header is truncated";
 		return false;
 	}
 	size_t data_offset = header_offset + header_length;
 
-	std::string header(reinterpret_cast<const char *>(entry.data + header_offset), header_length);
+	std::string header(reinterpret_cast<const char *>(member_data + header_offset), header_length);
 	std::string descr;
 	if (!npy_try_get_quoted_value(header, "descr", descr)) {
 		error = "NPY header does not contain descr";
@@ -821,10 +1227,6 @@ static bool parse_npy_array(const NpzEntryView &entry, NpyArrayView &array, std:
 	bool fortran_order = false;
 	if (!npy_try_get_bool_value(header, "fortran_order", fortran_order)) {
 		error = "NPY header does not contain fortran_order";
-		return false;
-	}
-	if (fortran_order) {
-		error = "Fortran-ordered NPY arrays are not supported";
 		return false;
 	}
 
@@ -840,8 +1242,8 @@ static bool parse_npy_array(const NpzEntryView &entry, NpyArrayView &array, std:
 
 	char byte_order = descr[0];
 	char kind = descr[1];
-	if (byte_order != '<' && byte_order != '|' && byte_order != '=') {
-		error = "unsupported NPY byte order";
+	if (byte_order != '<' && byte_order != '>' && byte_order != '|' && byte_order != '=') {
+		error = "NPY byte order could not be read";
 		return false;
 	}
 
@@ -855,9 +1257,10 @@ static bool parse_npy_array(const NpzEntryView &entry, NpyArrayView &array, std:
 	array.byte_order = byte_order;
 	array.kind = kind;
 	array.item_size = (size_t)item_size;
-	array.fortran_order = false;
+	array.fortran_order = fortran_order;
 	array.shape = std::move(shape);
-	array.data = entry.data + data_offset;
+	array.data = member_data + data_offset;
+	array.needs_byte_swap = npy_requires_byte_swap(byte_order);
 
 	size_t total_elements = 0;
 	if (!npy_try_total_elements(array, total_elements)) {
@@ -870,8 +1273,12 @@ static bool parse_npy_array(const NpzEntryView &entry, NpyArrayView &array, std:
 		error = "NPY array is too large";
 		return false;
 	}
-	if (expected_bytes > entry.compressed_size - data_offset) {
+	if (data_offset > member_size || expected_bytes > member_size - data_offset) {
 		error = "NPY payload is truncated";
+		return false;
+	}
+	if (!npy_try_build_strides(array.shape, array.fortran_order, array.logical_strides, array.storage_strides)) {
+		error = "NPY array is too large";
 		return false;
 	}
 	array.data_size = expected_bytes;
@@ -886,10 +1293,75 @@ static T read_unaligned_value(const uint8_t *data)
 	return value;
 }
 
+template<typename T>
+static T read_unaligned_value_with_byte_order(const uint8_t *data, bool swap_bytes)
+{
+	if (!swap_bytes)
+		return read_unaligned_value<T>(data);
+
+	T value {};
+	uint8_t *out = reinterpret_cast<uint8_t *>(&value);
+	for (size_t idx = 0; idx < sizeof(T); ++idx)
+		out[idx] = data[sizeof(T) - 1U - idx];
+	return value;
+}
+
+static double float16_to_double(uint16_t bits)
+{
+	const bool negative = (bits & 0x8000U) != 0U;
+	const uint16_t exponent = (bits >> 10U) & 0x001fU;
+	const uint16_t mantissa = bits & 0x03ffU;
+
+	if (exponent == 0U) {
+		if (mantissa == 0U)
+			return negative ? -0.0 : 0.0;
+		double magnitude = std::ldexp((double)mantissa, -24);
+		return negative ? -magnitude : magnitude;
+	}
+	if (exponent == 0x001fU) {
+		if (mantissa == 0U)
+			return negative ? -std::numeric_limits<double>::infinity() : std::numeric_limits<double>::infinity();
+		return std::numeric_limits<double>::quiet_NaN();
+	}
+
+	double magnitude = std::ldexp(1.0 + ((double)mantissa / 1024.0), (int)exponent - 15);
+	return negative ? -magnitude : magnitude;
+}
+
 static bool npy_read_number_at(const NpyArrayView &array, size_t index, double &out, std::string &error)
 {
+	size_t element_count = 0;
+	if (!npy_try_total_elements(array, element_count)) {
+		error = "NPY array is too large";
+		return false;
+	}
+	if (index >= element_count) {
+		error = "NPY index is out of range";
+		return false;
+	}
+	size_t storage_index = 0;
+	size_t remaining = index;
+	for (size_t dim = 0; dim < array.shape.size(); ++dim) {
+		size_t logical_stride = array.logical_strides[dim];
+		size_t coord = logical_stride == 0U ? 0U : (remaining / logical_stride);
+		if (coord >= array.shape[dim]) {
+			error = "NPY index is out of range";
+			return false;
+		}
+		if (logical_stride != 0U)
+			remaining %= logical_stride;
+
+		size_t term = 0;
+		if (!safe_multiply_size(coord, array.storage_strides[dim], term) ||
+		    storage_index > std::numeric_limits<size_t>::max() - term) {
+			error = "NPY array is too large";
+			return false;
+		}
+		storage_index += term;
+	}
+
 	size_t offset = 0;
-	if (!safe_multiply_size(index, array.item_size, offset) || offset + array.item_size > array.data_size) {
+	if (!safe_multiply_size(storage_index, array.item_size, offset) || offset + array.item_size > array.data_size) {
 		error = "NPY index is out of range";
 		return false;
 	}
@@ -909,13 +1381,13 @@ static bool npy_read_number_at(const NpyArrayView &array, size_t index, double &
 			out = (double)ptr[0];
 			return true;
 		case 2U:
-			out = (double)read_unaligned_value<uint16_t>(ptr);
+			out = (double)read_unaligned_value_with_byte_order<uint16_t>(ptr, array.needs_byte_swap);
 			return true;
 		case 4U:
-			out = (double)read_unaligned_value<uint32_t>(ptr);
+			out = (double)read_unaligned_value_with_byte_order<uint32_t>(ptr, array.needs_byte_swap);
 			return true;
 		case 8U:
-			out = (double)read_unaligned_value<uint64_t>(ptr);
+			out = (double)read_unaligned_value_with_byte_order<uint64_t>(ptr, array.needs_byte_swap);
 			return true;
 		}
 		break;
@@ -926,30 +1398,33 @@ static bool npy_read_number_at(const NpyArrayView &array, size_t index, double &
 			out = (double)read_unaligned_value<int8_t>(ptr);
 			return true;
 		case 2U:
-			out = (double)read_unaligned_value<int16_t>(ptr);
+			out = (double)read_unaligned_value_with_byte_order<int16_t>(ptr, array.needs_byte_swap);
 			return true;
 		case 4U:
-			out = (double)read_unaligned_value<int32_t>(ptr);
+			out = (double)read_unaligned_value_with_byte_order<int32_t>(ptr, array.needs_byte_swap);
 			return true;
 		case 8U:
-			out = (double)read_unaligned_value<int64_t>(ptr);
+			out = (double)read_unaligned_value_with_byte_order<int64_t>(ptr, array.needs_byte_swap);
 			return true;
 		}
 		break;
 
 	case 'f':
 		switch (array.item_size) {
+		case 2U:
+			out = float16_to_double(read_unaligned_value_with_byte_order<uint16_t>(ptr, array.needs_byte_swap));
+			return true;
 		case 4U:
-			out = (double)read_unaligned_value<float>(ptr);
+			out = (double)read_unaligned_value_with_byte_order<float>(ptr, array.needs_byte_swap);
 			return true;
 		case 8U:
-			out = read_unaligned_value<double>(ptr);
+			out = read_unaligned_value_with_byte_order<double>(ptr, array.needs_byte_swap);
 			return true;
 		}
 		break;
 	}
 
-	error = std::string("unsupported NPY dtype: ") + array.descr;
+	error = std::string("NPY dtype could not be read: ") + array.descr;
 	return false;
 }
 
@@ -1024,7 +1499,8 @@ static bool load_track_frames_from_npz(const std::string &path, uint32_t output_
 	std::vector<double> primary_values;
 	if (quad_entry) {
 		NpyArrayView quad_array;
-		if (!parse_npy_array(*quad_entry, quad_array, error))
+		std::vector<uint8_t> quad_data;
+		if (!parse_npy_array(*quad_entry, quad_array, quad_data, error))
 			return false;
 		if (quad_array.shape.size() != 3U || quad_array.shape[1] != 4U || quad_array.shape[2] != 2U) {
 			error = "track NPZ quad array must be shaped (N,4,2)";
@@ -1035,7 +1511,8 @@ static bool load_track_frames_from_npz(const std::string &path, uint32_t output_
 			return false;
 	} else {
 		NpyArrayView bbox_array;
-		if (!parse_npy_array(*bbox_entry, bbox_array, error))
+		std::vector<uint8_t> bbox_data;
+		if (!parse_npy_array(*bbox_entry, bbox_array, bbox_data, error))
 			return false;
 		if (bbox_array.shape.size() != 2U || bbox_array.shape[1] != 4U) {
 			error = "track NPZ bbox array must be shaped (N,4)";
@@ -1049,7 +1526,8 @@ static bool load_track_frames_from_npz(const std::string &path, uint32_t output_
 	std::vector<bool> valid(frame_count, true);
 	if (const NpzEntryView *valid_entry = find_npz_entry(entries, "valid.npy")) {
 		NpyArrayView valid_array;
-		if (!parse_npy_array(*valid_entry, valid_array, error))
+		std::vector<uint8_t> valid_data;
+		if (!parse_npy_array(*valid_entry, valid_array, valid_data, error))
 			return false;
 		size_t valid_count = 0;
 		if (!npy_try_total_elements(valid_array, valid_count)) {
@@ -1069,7 +1547,8 @@ static bool load_track_frames_from_npz(const std::string &path, uint32_t output_
 	double src_w = (double)output_width;
 	if (const NpzEntryView *width_entry = find_npz_entry(entries, "w.npy")) {
 		NpyArrayView width_array;
-		if (!parse_npy_array(*width_entry, width_array, error))
+		std::vector<uint8_t> width_data;
+		if (!parse_npy_array(*width_entry, width_array, width_data, error))
 			return false;
 		if (!npy_read_scalar_number(width_array, src_w, error))
 			return false;
@@ -1078,7 +1557,8 @@ static bool load_track_frames_from_npz(const std::string &path, uint32_t output_
 	double src_h = (double)output_height;
 	if (const NpzEntryView *height_entry = find_npz_entry(entries, "h.npy")) {
 		NpyArrayView height_array;
-		if (!parse_npy_array(*height_entry, height_array, error))
+		std::vector<uint8_t> height_data;
+		if (!parse_npy_array(*height_entry, height_array, height_data, error))
 			return false;
 		if (!npy_read_scalar_number(height_array, src_h, error))
 			return false;
@@ -1399,7 +1879,7 @@ static bool load_track_frames_from_path(const std::string &path, uint32_t output
 		if (!fallback_json.empty() && fallback_json != path) {
 			std::string fallback_error;
 			if (load_track_frames_from_json(fallback_json, output_width, output_height, frames_out, any_valid, fallback_error)) {
-				obs_log(LOG_WARNING, "falling back to sibling JSON track for unsupported NPZ '%s': %s", path.c_str(),
+				obs_log(LOG_WARNING, "falling back to sibling JSON track for NPZ '%s': %s", path.c_str(),
 					npz_error.c_str());
 				return true;
 			}
@@ -1733,13 +2213,13 @@ private:
 		std::string track = resolve_track_input_candidate(track_calibrated_path_);
 		if (!track.empty())
 			return track;
-		track = resolve_track_input_candidate(track_file_path_);
-		if (!track.empty())
-			return track;
+	track = resolve_track_input_candidate(track_file_path_);
+	if (!track.empty())
+		return track;
 
-		error = "Track file must be a JSON export or a supported NPZ archive.";
-		return std::string();
-	}
+	error = "Track file must be a JSON export or NPZ track archive.";
+	return std::string();
+}
 
 	bool read_next_video_frame(ImageBGRA &image, uint64_t &timestamp_ns)
 	{

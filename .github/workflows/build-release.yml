@@ -236,6 +236,5 @@ jobs:
               "release/${CHECKSUMS_NAME}#SHA256 checksums" \
               --title "MotionPngTuberPlayer ${GITHUB_REF_NAME}" \
               --generate-notes \
-              --notes "${notes}" \
-              --prerelease
+              --notes "${notes}"
           fi

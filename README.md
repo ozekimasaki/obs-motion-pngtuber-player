@@ -84,9 +84,7 @@ For most users, this should be the microphone/input source they already use in O
 - `.json` track files
 - `.npz` track files
 
-Standard `.npz` track archives are read directly.
-
-If your `.npz` uses an unsupported ZIP variant, keep a sibling `mouth_track.json` in the same folder as a fallback.
+NumPy-generated `.npz` track archives are read directly, including regular deflate-compressed members, streamed ZIP layouts, big-endian arrays, and Fortran-ordered arrays.
 
 ## Troubleshooting
 

@@ -547,7 +547,7 @@ static void *motionpngtuber_video_thread(void *data)
 		}
 		pthread_mutex_unlock(&context->mutex);
 
-		if (has_frame)
+		if (has_frame && os_event_try(context->stop_signal) == EAGAIN)
 			obs_source_output_video(context->source, &frame);
 
 		os_sleepto_ns(next_frame_time += frame_interval_ns);
@@ -603,8 +603,8 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	}
 
 	merged_settings = obs_data_create();
-	if (effective_settings) {
-		obs_data_apply(merged_settings, effective_settings);
+	if (source_settings) {
+		obs_data_apply(merged_settings, source_settings);
 	} else {
 		pthread_mutex_lock(&context->mutex);
 		write_canonical_settings(merged_settings, context->loop_video, context->mouth_dir, context->track_file,
@@ -612,9 +612,9 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 					 context->legacy_direct_audio_requested, context->audio_device_index,
 					 context->audio_device_identity_json, context->valid_policy);
 		pthread_mutex_unlock(&context->mutex);
-		if (settings)
-			obs_data_apply(merged_settings, settings);
 	}
+	if (settings && settings != source_settings)
+		obs_data_apply(merged_settings, settings);
 
 	if (should_auto_fill_related_paths(merged_settings))
 		auto_fill_related_paths(merged_settings);
@@ -856,9 +856,17 @@ static void motionpngtuber_destroy(void *data)
 	if (!context)
 		return;
 
+	pthread_mutex_lock(&context->mutex);
+	context->active = false;
+	pthread_mutex_unlock(&context->mutex);
+
 	os_event_signal(context->stop_signal);
 	if (context->thread_started)
 		pthread_join(context->thread, NULL);
+
+	pthread_mutex_lock(&context->mutex);
+	motionpngtuber_reset_runtime_locked(context);
+	pthread_mutex_unlock(&context->mutex);
 
 	if (context->frame_data)
 		bfree(context->frame_data);

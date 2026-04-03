@@ -39,7 +39,7 @@ def load_existing_config(config_path: Path) -> dict[str, object]:
     if not config_path.exists():
         return {}
 
-    with config_path.open("r", encoding="utf-8") as handle:
+    with config_path.open("r", encoding="utf-8-sig") as handle:
         data = json.load(handle)
 
     if not isinstance(data, dict):
@@ -59,7 +59,7 @@ def update_legacy_global_config(
     parser = create_ini_parser()
 
     if global_config_path.exists():
-        parser.read(global_config_path, encoding="utf-8")
+        parser.read(global_config_path, encoding="utf-8-sig")
 
     if not parser.has_section(LEGACY_CONFIG_SECTION):
         parser.add_section(LEGACY_CONFIG_SECTION)
@@ -91,7 +91,7 @@ def update_user_config(config_root: Path, *, mark_first_run_complete: bool = Fal
     parser = create_ini_parser()
 
     if user_config_path.exists():
-        parser.read(user_config_path, encoding="utf-8")
+        parser.read(user_config_path, encoding="utf-8-sig")
 
     if not parser.has_section("General"):
         parser.add_section("General")

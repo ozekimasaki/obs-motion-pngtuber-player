@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import shutil
 import struct
@@ -80,7 +81,7 @@ def create_track_file(output_path: Path, width: int, height: int, fps: int) -> N
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8", newline="\n")
 
 
-def build_npy_payload(descr: str, shape: tuple[int, ...], payload: bytes) -> bytes:
+def build_npy_payload(descr: str, shape: tuple[int, ...], payload: bytes, *, fortran_order: bool = False) -> bytes:
     if len(descr) < 3:
         raise ValueError(f"Invalid dtype descriptor: {descr!r}")
 
@@ -91,47 +92,114 @@ def build_npy_payload(descr: str, shape: tuple[int, ...], payload: bytes) -> byt
     else:
         shape_text = "(" + ", ".join(str(dim) for dim in shape) + ")"
 
-    header = f"{{'descr': '{descr}', 'fortran_order': False, 'shape': {shape_text}, }}".encode("ascii")
+    header = f"{{'descr': '{descr}', 'fortran_order': {str(fortran_order)}, 'shape': {shape_text}, }}".encode("ascii")
     preamble_len = 10
     padding_len = (-((preamble_len + len(header) + 1) % 64)) % 64
     header_bytes = header + (b" " * padding_len) + b"\n"
     return b"\x93NUMPY\x01\x00" + struct.pack("<H", len(header_bytes)) + header_bytes + payload
 
 
-def create_track_npz(output_path: Path, width: int, height: int, fps: int) -> None:
+class UnseekableBytesIO(io.BytesIO):
+    def seekable(self) -> bool:
+        return False
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        raise io.UnsupportedOperation("seek")
+
+    def tell(self) -> int:
+        raise io.UnsupportedOperation("tell")
+
+
+def build_quad_payload(
+    frame_count: int,
+    mouth_left: int,
+    mouth_top: int,
+    mouth_right: int,
+    mouth_bottom: int,
+    *,
+    byte_order: str,
+    fortran_order: bool,
+) -> bytes:
+    quad = (
+        (
+            float(mouth_left),
+            float(mouth_top),
+        ),
+        (
+            float(mouth_right),
+            float(mouth_top + 2),
+        ),
+        (
+            float(mouth_right - 2),
+            float(mouth_bottom),
+        ),
+        (
+            float(mouth_left + 1),
+            float(mouth_bottom - 1),
+        ),
+    )
+
+    values: list[float] = []
+    if fortran_order:
+        for axis2 in range(2):
+            for axis1 in range(4):
+                for _ in range(frame_count):
+                    values.append(quad[axis1][axis2])
+    else:
+        for _ in range(frame_count):
+            for axis1 in range(4):
+                for axis2 in range(2):
+                    values.append(quad[axis1][axis2])
+
+    return struct.pack(f"{byte_order}{len(values)}f", *values)
+
+
+def create_track_npz(output_path: Path, width: int, height: int, fps: int, *, compression: int, streamed: bool = False) -> None:
     mouth_left = width // 2 - 52
     mouth_top = height // 2 - 8
     mouth_right = mouth_left + 104
     mouth_bottom = mouth_top + 68
     frame_count = max(1, fps)
 
-    quad = (
-        float(mouth_left),
-        float(mouth_top),
-        float(mouth_right),
-        float(mouth_top + 2),
-        float(mouth_right - 2),
-        float(mouth_bottom),
-        float(mouth_left + 1),
-        float(mouth_bottom - 1),
+    quad_payload = build_quad_payload(
+        frame_count,
+        mouth_left,
+        mouth_top,
+        mouth_right,
+        mouth_bottom,
+        byte_order=">",
+        fortran_order=True,
     )
-    quad_payload = struct.pack("<" + "f" * (len(quad) * frame_count), *(quad * frame_count))
     valid_payload = bytes([1] * frame_count)
-    width_payload = struct.pack("<i", width)
-    height_payload = struct.pack("<i", height)
+    width_payload = struct.pack(">i", width)
+    height_payload = struct.pack(">i", height)
 
-    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_STORED) as archive:
-        archive.writestr("quad.npy", build_npy_payload("<f4", (frame_count, 4, 2), quad_payload))
-        archive.writestr("valid.npy", build_npy_payload("|u1", (frame_count,), valid_payload))
-        archive.writestr("w.npy", build_npy_payload("<i4", (), width_payload))
-        archive.writestr("h.npy", build_npy_payload("<i4", (), height_payload))
+    members = {
+        "quad.npy": build_npy_payload(">f4", (frame_count, 4, 2), quad_payload, fortran_order=True),
+        "valid.npy": build_npy_payload("|u1", (frame_count,), valid_payload),
+        "w.npy": build_npy_payload(">i4", (), width_payload),
+        "h.npy": build_npy_payload(">i4", (), height_payload),
+    }
+
+    if streamed:
+        buffer = UnseekableBytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=compression) as archive:
+            for name, payload in members.items():
+                with archive.open(name, "w") as member:
+                    member.write(payload)
+        output_path.write_bytes(buffer.getvalue())
+        return
+
+    with zipfile.ZipFile(output_path, "w", compression=compression) as archive:
+        for name, payload in members.items():
+            archive.writestr(name, payload)
 
 
 def write_manifest(output_path: Path, asset_root: Path) -> None:
     manifest = {
         "loop_video": str(asset_root / "loop.mp4"),
         "mouth_dir": str(asset_root / "mouth"),
-        "track_file": str(asset_root / "mouth_track.npz"),
+        "track_file": str(asset_root / "mouth_track_nyapan.npz"),
     }
     output_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8", newline="\n")
 
@@ -154,7 +222,15 @@ def main() -> int:
     create_video(args.ffmpeg, output_dir / "loop.mp4", args.width, args.height, args.fps, args.duration_seconds)
     create_open_mouth_sprite(output_dir / "mouth" / "open.png")
     create_track_file(output_dir / "mouth_track.json", args.width, args.height, args.fps)
-    create_track_npz(output_dir / "mouth_track.npz", args.width, args.height, args.fps)
+    create_track_npz(output_dir / "mouth_track.npz", args.width, args.height, args.fps, compression=zipfile.ZIP_STORED)
+    create_track_npz(
+        output_dir / "mouth_track_nyapan.npz",
+        args.width,
+        args.height,
+        args.fps,
+        compression=zipfile.ZIP_DEFLATED,
+        streamed=True,
+    )
     write_manifest(output_dir / "smoke-assets.json", output_dir)
     return 0
 
