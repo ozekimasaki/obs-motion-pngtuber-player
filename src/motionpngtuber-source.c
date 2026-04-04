@@ -40,6 +40,8 @@
 #define AUTO_OBS_AUDIO_SOURCE_SELECTION "__auto__"
 #define DIRECT_OBS_AUDIO_SOURCE_SELECTION "__direct__"
 #define FRAME_BUFFER_RESIZE_ERROR "Failed to resize video frame buffer."
+#define RUNTIME_RECOVERY_ERROR "Playback stalled; attempting runtime recovery."
+#define RUNTIME_RENDER_FAILURE_REBUILD_THRESHOLD 2
 
 extern obs_data_t *obs_source_get_settings(const obs_source_t *source);
 
@@ -53,6 +55,7 @@ struct motionpngtuber_source {
 	bool runtime_ready;
 	bool runtime_dirty;
 	bool legacy_direct_audio_requested;
+	uint32_t render_failure_streak;
 
 	char *loop_video;
 	char *mouth_dir;
@@ -542,8 +545,30 @@ static void *motionpngtuber_video_thread(void *data)
 					frame.format = VIDEO_FORMAT_BGRA;
 					frame.timestamp = native_timestamp;
 					has_frame = true;
+					context->render_failure_streak = 0;
+					if (strings_equal_nullable(context->last_error, RUNTIME_RECOVERY_ERROR))
+						replace_string(&context->last_error, NULL);
 				}
 			}
+			if (!has_frame) {
+				if (strings_equal_nullable(context->last_error, FRAME_BUFFER_RESIZE_ERROR)) {
+					context->render_failure_streak = 0;
+					pthread_mutex_unlock(&context->mutex);
+					os_sleepto_ns(next_frame_time += frame_interval_ns);
+					continue;
+				}
+				context->render_failure_streak++;
+				if (context->render_failure_streak >= RUNTIME_RENDER_FAILURE_REBUILD_THRESHOLD) {
+					context->render_failure_streak = 0;
+					context->runtime_dirty = true;
+					if (!strings_equal_nullable(context->last_error, RUNTIME_RECOVERY_ERROR))
+						replace_string(&context->last_error, RUNTIME_RECOVERY_ERROR);
+					obs_log(LOG_WARNING,
+						"MotionPngTuberPlayer runtime stopped producing frames; rebuilding playback runtime");
+				}
+			}
+		} else {
+			context->render_failure_streak = 0;
 		}
 		pthread_mutex_unlock(&context->mutex);
 

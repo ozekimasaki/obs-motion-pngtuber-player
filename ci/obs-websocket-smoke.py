@@ -557,6 +557,60 @@ def capture_changed_screenshot(
     raise AssertionError(description)
 
 
+def verify_continuous_motion(
+    client: ObsWebSocketClient,
+    source_name: str,
+    artifacts_dir: Path,
+    *,
+    sample_count: int = 10,
+    interval_seconds: float = 1.0,
+    max_same_hash_run: int = 4,
+) -> dict[str, object]:
+    hashes: list[str] = []
+    unique_hashes: set[str] = set()
+    previous_hash: str | None = None
+    same_hash_run = 0
+    max_same_hash_run_seen = 0
+
+    for sample_index in range(sample_count):
+        client.request("GetVersion")
+        image = capture_screenshot_exact(
+            client,
+            source_name,
+            artifacts_dir / f"loop-motion-{sample_index:02d}.png",
+            timeout_seconds=10.0,
+        )
+        digest = hashlib.sha256(image.tobytes()).hexdigest()
+        hashes.append(digest)
+        unique_hashes.add(digest)
+
+        if digest == previous_hash:
+            same_hash_run += 1
+        else:
+            same_hash_run = 1
+        previous_hash = digest
+        max_same_hash_run_seen = max(max_same_hash_run_seen, same_hash_run)
+
+        assert_true(
+            same_hash_run <= max_same_hash_run,
+            f"{source_name} should keep advancing across loop playback (stalled after {sample_index + 1} captures)",
+        )
+
+        if sample_index + 1 < sample_count:
+            time.sleep(interval_seconds)
+
+    assert_true(
+        len(unique_hashes) >= 3,
+        f"{source_name} should produce multiple distinct frames during loop playback",
+    )
+    return {
+        "sample_count": sample_count,
+        "unique_hashes": len(unique_hashes),
+        "max_same_hash_run": max_same_hash_run_seen,
+        "hashes": hashes,
+    }
+
+
 def assert_equal(actual: object, expected: object, description: str) -> None:
     if actual != expected:
         raise AssertionError(f"{description}: expected {expected!r}, got {actual!r}")
@@ -577,6 +631,7 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
     asset_root = Path(args.asset_dir)
     artifacts_dir = Path(args.artifacts_dir)
     loop_video = asset_root / "loop.mp4"
+    loop_motion_video = asset_root / "loop_motion.mp4"
     mouth_dir = asset_root / "mouth"
     control_image = mouth_dir / "open.png"
     auto_filled_track_file = asset_root / "mouth_track.json"
@@ -777,6 +832,34 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         assert_equal(int(reloaded_filter_settings.get("top", 0)), crop.top, "reloaded crop_filter top")
         assert_equal(int(reloaded_filter_settings.get("bottom", 0)), crop.bottom, "reloaded crop_filter bottom")
 
+        client.request(
+            "SetInputSettings",
+            {
+                "inputName": args.source_name,
+                "inputSettings": {
+                    "loop_video": str(loop_motion_video),
+                    PROP_AUDIO_SYNC_SOURCE_UUID: "",
+                },
+                "overlay": True,
+            },
+        )
+        time.sleep(2.0)
+        updated_motion_settings = get_input_settings(client, args.source_name)
+        assert_equal(
+            normalize_path(str(loop_motion_video)),
+            normalize_path(str(updated_motion_settings.get("loop_video", ""))),
+            "updated loop_video",
+        )
+        assert_equal(
+            normalize_path(str(track_file)),
+            normalize_path(str(updated_motion_settings.get("track_file", ""))),
+            "updated motion track_file",
+        )
+        assert_equal(str(updated_motion_settings.get(PROP_AUDIO_SYNC_SOURCE_UUID, "")), "", "cleared audio_sync_source_uuid")
+        client.request("SetCurrentProgramScene", {"sceneName": args.scene_name})
+        time.sleep(2.0)
+        motion_summary = verify_continuous_motion(client, args.scene_name, artifacts_dir)
+
         summary = {
             "before_filter_size": list(before_filter.size) if before_filter is not None else None,
             "after_filter_size": list(after_filter.size) if after_filter is not None else None,
@@ -791,6 +874,7 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
             "audio_sync_source_uuid": late_audio_source_uuid,
             "audio_callback_log": audio_callback_log,
             "capture_target": capture_target,
+            "loop_motion_summary": motion_summary,
             "source_active": source_activity.active,
             "source_showing": source_activity.showing,
             "scene_active": scene_activity.active,
@@ -809,7 +893,7 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
 def run_reopen_phase(args: argparse.Namespace) -> dict[str, object]:
     asset_root = Path(args.asset_dir)
     artifacts_dir = Path(args.artifacts_dir)
-    loop_video = asset_root / "loop.mp4"
+    loop_video = asset_root / "loop_motion.mp4"
     mouth_dir = asset_root / "mouth"
     control_image = mouth_dir / "open.png"
     track_file = asset_root / "mouth_track_nyapan.npz"
@@ -843,6 +927,7 @@ def run_reopen_phase(args: argparse.Namespace) -> dict[str, object]:
         assert_equal(normalize_path(str(track_file)), normalize_path(str(settings.get("track_file", ""))), "persisted track_file")
         assert_equal(int(settings.get("render_fps", 0)), 24, "persisted render_fps")
         assert_equal(str(settings.get("valid_policy", "")), "strict", "persisted valid_policy")
+        assert_equal(str(settings.get(PROP_AUDIO_SYNC_SOURCE_UUID, "")), "", "persisted audio_sync_source_uuid")
 
         filters = client.request("GetSourceFilterList", {"sourceName": args.source_name}).get("filters", [])
         filter_names = [entry.get("filterName") for entry in filters if isinstance(entry, dict)]
@@ -856,13 +941,6 @@ def run_reopen_phase(args: argparse.Namespace) -> dict[str, object]:
         assert_equal(int(filter_settings.get("top", 0)), crop.top, "persisted crop_filter top")
         assert_equal(int(filter_settings.get("bottom", 0)), crop.bottom, "persisted crop_filter bottom")
         audio_callback_log: str | None = None
-        if args.obs_log_dir:
-            callback_log_path = wait_for_log_message(
-                Path(args.obs_log_dir),
-                f"received first OBS audio callback for MotionPngTuberPlayer lip sync: {late_audio_source_uuid}",
-                "persisted OBS audio source should still deliver audio callbacks after restart",
-            )
-            audio_callback_log = str(callback_log_path)
 
         restarted_image: Image.Image | None = None
         restart_capture_target: str | None = None

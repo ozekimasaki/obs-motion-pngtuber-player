@@ -2337,7 +2337,7 @@ private:
 		obs_audio_source_remove_signal_connected_ = false;
 	}
 
-	void detach_obs_audio_source_locked(bool wait_for_callbacks)
+	void detach_obs_audio_source_locked()
 	{
 		obs_source_t *source = obs_audio_source_;
 		if (!source)
@@ -2349,15 +2349,12 @@ private:
 		obs_source_release(source);
 		obs_audio_source_attach_ns_ = 0;
 		obs_audio_callbacks_seen_since_attach_.store(false);
-
-		if (wait_for_callbacks)
-			wait_for_obs_audio_callbacks();
 	}
 
-	void detach_obs_audio_source(bool wait_for_callbacks)
+	void detach_obs_audio_source()
 	{
 		std::lock_guard<std::mutex> lock(obs_audio_source_mutex_);
-		detach_obs_audio_source_locked(wait_for_callbacks);
+		detach_obs_audio_source_locked();
 	}
 
 	bool should_reattach_obs_audio_source_locked() const
@@ -2409,7 +2406,7 @@ private:
 			obs_log(LOG_WARNING,
 				"re-attaching OBS audio source for MotionPngTuberPlayer lip sync because no callbacks arrived yet: %s",
 				obs_audio_source_uuid_.c_str());
-			detach_obs_audio_source_locked(false);
+			detach_obs_audio_source_locked();
 			reset_audio_analysis_state();
 			next_obs_audio_attach_attempt_ns_.store(0);
 			obs_audio_attach_warning_logged_.store(false);
@@ -2466,9 +2463,30 @@ private:
 		return true;
 	}
 
-	void handle_obs_source_audio(const struct audio_data *audio, bool muted)
+	bool snapshot_obs_audio_format_for_source(obs_source_t *source, uint32_t &sample_rate, enum audio_format &format,
+						  enum speaker_layout &speakers, std::string &source_uuid)
 	{
-		if (!audio || audio->frames == 0 || obs_audio_sample_rate_ == 0) {
+		std::lock_guard<std::mutex> lock(obs_audio_source_mutex_);
+		if (!source || source != obs_audio_source_)
+			return false;
+		if (obs_audio_sample_rate_ == 0 || get_audio_channels(obs_audio_speakers_) == 0 ||
+		    get_audio_bytes_per_channel(obs_audio_format_) == 0)
+			return false;
+
+		sample_rate = obs_audio_sample_rate_;
+		format = obs_audio_format_;
+		speakers = obs_audio_speakers_;
+		source_uuid = obs_audio_source_uuid_;
+		return true;
+	}
+
+	void handle_obs_source_audio(obs_source_t *source, const struct audio_data *audio, bool muted)
+	{
+		uint32_t sample_rate = 0;
+		enum audio_format format = AUDIO_FORMAT_UNKNOWN;
+		enum speaker_layout speakers = SPEAKERS_UNKNOWN;
+		std::string source_uuid;
+		if (!audio || audio->frames == 0 || !snapshot_obs_audio_format_for_source(source, sample_rate, format, speakers, source_uuid)) {
 			latest_rms_.store(0.0f);
 			latest_zcr_.store(0.0f);
 			return;
@@ -2477,14 +2495,14 @@ private:
 		float rms = 0.0f;
 		float zcr = 0.0f;
 		if (!muted)
-			compute_audio_metrics_from_obs_audio(audio, obs_audio_format_, obs_audio_speakers_, rms, zcr);
+			compute_audio_metrics_from_obs_audio(audio, format, speakers, rms, zcr);
 
-		uint64_t duration_ns = audio_frames_to_ns(obs_audio_sample_rate_, audio->frames);
+		uint64_t duration_ns = audio_frames_to_ns(sample_rate, audio->frames);
 		queue_audio_analysis_window(audio->timestamp, audio->timestamp + duration_ns, rms, zcr);
 		last_obs_audio_arrival_ns_.store(os_gettime_ns());
 		if (!obs_audio_callbacks_seen_since_attach_.exchange(true)) {
 			obs_log(LOG_INFO, "received first OBS audio callback for MotionPngTuberPlayer lip sync: %s",
-				obs_audio_source_uuid_.c_str());
+				source_uuid.c_str());
 		}
 	}
 
@@ -2503,7 +2521,7 @@ private:
 			std::lock_guard<std::mutex> lock(obs_audio_callback_mutex_);
 			obs_audio_callback_shutdown_ = true;
 		}
-		detach_obs_audio_source(true);
+		detach_obs_audio_source();
 		wait_for_obs_audio_callbacks();
 		reset_audio_analysis_state();
 		next_obs_audio_attach_attempt_ns_.store(0);
@@ -2514,11 +2532,10 @@ private:
 	static void obs_audio_capture_callback(void *param, obs_source_t *source, const struct audio_data *audio_data,
 					     bool muted)
 	{
-		UNUSED_PARAMETER(source);
 		auto *runtime = reinterpret_cast<NativeRuntime *>(param);
 		if (!runtime || !runtime->begin_obs_audio_callback())
 			return;
-		runtime->handle_obs_source_audio(audio_data, muted);
+		runtime->handle_obs_source_audio(source, audio_data, muted);
 		runtime->end_obs_audio_callback();
 	}
 
@@ -2531,7 +2548,7 @@ private:
 
 		std::lock_guard<std::mutex> lock(runtime->obs_audio_source_mutex_);
 		runtime->obs_audio_source_remove_signal_connected_ = false;
-		runtime->detach_obs_audio_source_locked(false);
+		runtime->detach_obs_audio_source_locked();
 		runtime->reset_audio_analysis_state();
 		runtime->next_obs_audio_attach_attempt_ns_.store(0);
 		runtime->obs_audio_attach_warning_logged_.store(false);

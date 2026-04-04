@@ -49,6 +49,24 @@ def create_video(ffmpeg: str, output_path: Path, width: int, height: int, fps: i
     subprocess.run(command, check=True)
 
 
+def create_motion_video(ffmpeg: str, output_path: Path, width: int, height: int, fps: int, duration_seconds: int) -> None:
+    command = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        f"testsrc2=size={width}x{height}:rate={fps}:duration={duration_seconds}",
+        "-pix_fmt",
+        "yuv420p",
+        str(output_path),
+    ]
+    subprocess.run(command, check=True)
+
+
 def create_open_mouth_sprite(output_path: Path) -> None:
     image = Image.new("RGBA", (112, 72), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
@@ -224,6 +242,7 @@ def create_track_npz(output_path: Path, width: int, height: int, fps: int, *, co
 def write_manifest(output_path: Path, asset_root: Path) -> None:
     manifest = {
         "loop_video": str(asset_root / "loop.mp4"),
+        "loop_motion_video": str(asset_root / "loop_motion.mp4"),
         "mouth_dir": str(asset_root / "mouth"),
         "track_file": str(asset_root / "mouth_track_nyapan.npz"),
         "lip_sync_audio": str(asset_root / "lip_sync_tone.wav"),
@@ -247,6 +266,7 @@ def main() -> int:
     (output_dir / "mouth").mkdir(parents=True, exist_ok=True)
 
     create_video(args.ffmpeg, output_dir / "loop.mp4", args.width, args.height, args.fps, args.duration_seconds)
+    create_motion_video(args.ffmpeg, output_dir / "loop_motion.mp4", args.width, args.height, args.fps, args.duration_seconds)
     create_open_mouth_sprite(output_dir / "mouth" / "open.png")
     create_track_file(output_dir / "mouth_track.json", args.width, args.height, args.fps)
     create_lip_sync_audio(output_dir / "lip_sync_tone.wav")

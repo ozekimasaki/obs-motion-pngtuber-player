@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(MotionPngTuberPlayer VERSION 0.1.48 LANGUAGES C CXX)
+project(MotionPngTuberPlayer VERSION 0.1.49 LANGUAGES C CXX)
+
+include(CTest)
 
 if(NOT WIN32)
   message(FATAL_ERROR "MotionPngTuberPlayer is currently supported only on Windows. Configure and build this project on a Windows host.")
@@ -135,3 +137,37 @@ set(MPT_PLUGIN_RUNTIME_DESTINATION "obs-plugins/64bit")
 set(MPT_PLUGIN_DATA_DESTINATION "data/obs-plugins/${PROJECT_NAME}")
 
 install(TARGETS ${PROJECT_NAME} LIBRARY DESTINATION ${MPT_PLUGIN_RUNTIME_DESTINATION} RUNTIME DESTINATION ${MPT_PLUGIN_RUNTIME_DESTINATION})
+
+if(BUILD_TESTING)
+  find_program(MPT_FFMPEG_EXE ffmpeg REQUIRED)
+
+  add_executable(mpt-video-backend-reader-test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/mpt-video-backend-reader-test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/mpt-video-backend.cpp
+  )
+  target_include_directories(mpt-video-backend-reader-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_features(mpt-video-backend-reader-test PRIVATE cxx_std_17)
+  target_link_libraries(mpt-video-backend-reader-test PRIVATE mfplat mfreadwrite mfuuid mf ole32 windowsapp)
+
+  add_executable(mpt-video-backend-loop-test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/mpt-video-backend-loop-test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/mpt-video-backend.cpp
+  )
+  target_include_directories(mpt-video-backend-loop-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_features(mpt-video-backend-loop-test PRIVATE cxx_std_17)
+  target_link_libraries(mpt-video-backend-loop-test PRIVATE mfplat mfreadwrite mfuuid mf ole32 windowsapp)
+
+  add_test(
+    NAME mpt-video-backend-reader
+    COMMAND $<TARGET_FILE:mpt-video-backend-reader-test>
+  )
+
+  add_test(
+    NAME mpt-video-backend-loop
+    COMMAND $<TARGET_FILE:mpt-video-backend-loop-test>
+      --ffmpeg ${MPT_FFMPEG_EXE}
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/test-assets/mpt-video-backend-loop
+      --frames 20000
+      --max-same-hash-run 4
+  )
+endif()

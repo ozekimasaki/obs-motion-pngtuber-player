@@ -18,6 +18,8 @@ struct MptVideoBackend {
 
 namespace {
 
+constexpr size_t MAX_EMPTY_SOURCE_READS = 64;
+
 template<typename T>
 void safe_release(T **ptr)
 {
@@ -41,6 +43,20 @@ static std::wstring utf8_to_wide(const char *text)
 	if (!out.empty() && out.back() == L'\0')
 		out.pop_back();
 	return out;
+}
+
+static bool seek_reader_to_start(IMFSourceReader *reader)
+{
+	if (!reader)
+		return false;
+
+	PROPVARIANT position;
+	PropVariantInit(&position);
+	position.vt = VT_I8;
+	position.hVal.QuadPart = 0;
+	const HRESULT hr = reader->SetCurrentPosition(GUID_NULL, position);
+	PropVariantClear(&position);
+	return SUCCEEDED(hr);
 }
 
 } // namespace
@@ -162,6 +178,7 @@ bool mpt_video_backend_read_next_frame(MptVideoBackend *backend, ImageBGRA &imag
 	if (!backend || !backend->reader)
 		return false;
 
+	size_t empty_reads = 0;
 	for (;;) {
 		DWORD flags = 0;
 		LONGLONG timestamp = 0;
@@ -171,18 +188,27 @@ bool mpt_video_backend_read_next_frame(MptVideoBackend *backend, ImageBGRA &imag
 		if (FAILED(hr))
 			return false;
 
+		if (flags & MF_SOURCE_READERF_ERROR) {
+			safe_release(&sample);
+			return false;
+		}
+
 		if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
-			PROPVARIANT position;
-			PropVariantInit(&position);
-			position.vt = VT_I8;
-			position.hVal.QuadPart = 0;
-			backend->reader->SetCurrentPosition(GUID_NULL, position);
-			PropVariantClear(&position);
+			safe_release(&sample);
+			if (!seek_reader_to_start(backend->reader))
+				return false;
+			empty_reads = 0;
 			continue;
 		}
 
-		if (!sample)
+		if ((flags & MF_SOURCE_READERF_STREAMTICK) || !sample) {
+			safe_release(&sample);
+			if (++empty_reads > MAX_EMPTY_SOURCE_READS)
+				return false;
 			continue;
+		}
+
+		empty_reads = 0;
 
 		IMFMediaBuffer *buffer = nullptr;
 		hr = sample->ConvertToContiguousBuffer(&buffer);
