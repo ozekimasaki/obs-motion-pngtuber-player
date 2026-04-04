@@ -2496,6 +2496,11 @@ private:
 
 	void apply_mouth_metrics(float rms, float zcr, bool enable_temporal_smoothing)
 	{
+		constexpr float kLipSyncNoiseGate = 0.12f;
+		constexpr float kLipSyncResponseCurve = 1.25f;
+		constexpr float kLipSyncClosedThreshold = 0.12f;
+		constexpr float kLipSyncHalfThreshold = 0.40f;
+
 		if (rms < noise_floor_ + 0.0005f)
 			noise_floor_ = noise_floor_ * 0.995f + rms * 0.005f;
 		else
@@ -2504,7 +2509,11 @@ private:
 		peak_level_ = std::max(rms, peak_level_ * 0.995f);
 		float denom = std::max(peak_level_ - noise_floor_, 0.01f);
 		float normalized = std::clamp((rms - noise_floor_) / denom, 0.0f, 1.0f);
-		normalized = sqrtf(normalized);
+		if (normalized <= kLipSyncNoiseGate)
+			normalized = 0.0f;
+		else
+			normalized = (normalized - kLipSyncNoiseGate) / (1.0f - kLipSyncNoiseGate);
+		normalized = powf(normalized, kLipSyncResponseCurve);
 
 		float env = normalized;
 		if (enable_temporal_smoothing) {
@@ -2514,11 +2523,11 @@ private:
 			env_lp_ = normalized;
 		}
 
-		if (env < 0.08f) {
+		if (env < kLipSyncClosedThreshold) {
 			mouth_shape_index_ = 0;
 			return;
 		}
-		if (env < 0.32f) {
+		if (env < kLipSyncHalfThreshold) {
 			mouth_shape_index_ = 1;
 			return;
 		}
