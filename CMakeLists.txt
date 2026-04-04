@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(MotionPngTuberPlayer VERSION 0.1.51 LANGUAGES C CXX)
+project(MotionPngTuberPlayer VERSION 0.1.52 LANGUAGES C CXX)
 
 include(CTest)
 

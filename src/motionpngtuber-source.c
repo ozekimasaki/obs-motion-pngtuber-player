@@ -422,6 +422,19 @@ static void write_canonical_settings(obs_data_t *settings, const char *loop_vide
 	obs_data_set_string(settings, PROP_VALID_POLICY, has_text(valid_policy) ? valid_policy : "hold");
 }
 
+static void write_context_settings(obs_data_t *settings, struct motionpngtuber_source *context)
+{
+	if (!settings || !context)
+		return;
+
+	pthread_mutex_lock(&context->mutex);
+	write_canonical_settings(settings, context->loop_video, context->mouth_dir, context->track_file,
+				 context->track_calibrated_file, context->render_fps, context->audio_sync_source_uuid,
+				 context->legacy_direct_audio_requested, context->audio_device_index,
+				 context->audio_device_identity_json, context->valid_policy);
+	pthread_mutex_unlock(&context->mutex);
+}
+
 static void motionpngtuber_rebuild_runtime_locked(struct motionpngtuber_source *context)
 {
 	if (!context->runtime_dirty)
@@ -630,13 +643,11 @@ static void motionpngtuber_update(void *data, obs_data_t *settings)
 	merged_settings = obs_data_create();
 	if (source_settings) {
 		obs_data_apply(merged_settings, source_settings);
+		/* OBS can deliver partial overlays while obs_source_get_settings still carries stale auto-filled paths. */
+		if (settings && settings != source_settings)
+			write_context_settings(merged_settings, context);
 	} else {
-		pthread_mutex_lock(&context->mutex);
-		write_canonical_settings(merged_settings, context->loop_video, context->mouth_dir, context->track_file,
-					 context->track_calibrated_file, context->render_fps, context->audio_sync_source_uuid,
-					 context->legacy_direct_audio_requested, context->audio_device_index,
-					 context->audio_device_identity_json, context->valid_policy);
-		pthread_mutex_unlock(&context->mutex);
+		write_context_settings(merged_settings, context);
 	}
 	if (settings && settings != source_settings)
 		obs_data_apply(merged_settings, settings);
