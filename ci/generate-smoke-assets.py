@@ -4,9 +4,11 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import shutil
 import struct
 import subprocess
+import wave
 import zipfile
 from pathlib import Path
 
@@ -17,6 +19,7 @@ DEFAULT_WIDTH = 320
 DEFAULT_HEIGHT = 240
 DEFAULT_FPS = 24
 DEFAULT_DURATION_SECONDS = 2
+DEFAULT_AUDIO_SAMPLE_RATE = 48000
 
 
 def create_video(ffmpeg: str, output_path: Path, width: int, height: int, fps: int, duration_seconds: int) -> None:
@@ -79,6 +82,29 @@ def create_track_file(output_path: Path, width: int, height: int, fps: int) -> N
     }
 
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8", newline="\n")
+
+
+def create_lip_sync_audio(output_path: Path, sample_rate: int = DEFAULT_AUDIO_SAMPLE_RATE, duration_seconds: int = 6) -> None:
+    segment_duration_seconds = duration_seconds / 2.0
+    amplitude = 0.85
+    frequency_hz = 440.0
+    frame_count = max(1, int(sample_rate * duration_seconds))
+
+    samples = bytearray()
+    for frame_index in range(frame_count):
+        time_seconds = frame_index / sample_rate
+        segment_index = int(time_seconds / segment_duration_seconds)
+        value = 0.0
+        if segment_index % 2 == 1:
+            value = amplitude * math.sin(2.0 * math.pi * frequency_hz * time_seconds)
+        sample = max(-32767, min(32767, int(round(value * 32767.0))))
+        samples.extend(struct.pack("<h", sample))
+
+    with wave.open(str(output_path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(bytes(samples))
 
 
 def build_npy_payload(descr: str, shape: tuple[int, ...], payload: bytes, *, fortran_order: bool = False) -> bytes:
@@ -200,6 +226,7 @@ def write_manifest(output_path: Path, asset_root: Path) -> None:
         "loop_video": str(asset_root / "loop.mp4"),
         "mouth_dir": str(asset_root / "mouth"),
         "track_file": str(asset_root / "mouth_track_nyapan.npz"),
+        "lip_sync_audio": str(asset_root / "lip_sync_tone.wav"),
     }
     output_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8", newline="\n")
 
@@ -222,6 +249,7 @@ def main() -> int:
     create_video(args.ffmpeg, output_dir / "loop.mp4", args.width, args.height, args.fps, args.duration_seconds)
     create_open_mouth_sprite(output_dir / "mouth" / "open.png")
     create_track_file(output_dir / "mouth_track.json", args.width, args.height, args.fps)
+    create_lip_sync_audio(output_dir / "lip_sync_tone.wav")
     create_track_npz(output_dir / "mouth_track.npz", args.width, args.height, args.fps, compression=zipfile.ZIP_STORED)
     create_track_npz(
         output_dir / "mouth_track_nyapan.npz",

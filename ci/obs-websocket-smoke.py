@@ -18,6 +18,7 @@ from PIL import Image, ImageChops
 
 
 SOURCE_KIND = "motionpngtuber_player"
+LATE_AUDIO_SOURCE_KIND = "ffmpeg_source"
 PROP_AUDIO_SYNC_SOURCE_UUID = "audio_sync_source_uuid"
 SMOKE_CAPTURE_WIDTH = 320
 SMOKE_CAPTURE_HEIGHT = 240
@@ -324,6 +325,56 @@ def ensure_input(
             raise
 
 
+def get_input_uuid(client: ObsWebSocketClient, input_name: str) -> str:
+    response = client.request("GetInputList")
+    inputs = response.get("inputs", [])
+    if not isinstance(inputs, list):
+        raise RuntimeError(f"OBS did not return an input list: {response}")
+
+    for entry in inputs:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("inputName") != input_name:
+            continue
+
+        input_uuid = entry.get("inputUuid")
+        if isinstance(input_uuid, str) and input_uuid:
+            return input_uuid
+        raise RuntimeError(f"OBS did not return an inputUuid for {input_name}: {entry}")
+
+    raise RuntimeError(f"{input_name} was not found in OBS input list")
+
+
+def property_item_contains_name(property_items: list[object], expected_name: str) -> bool:
+    for entry in property_items:
+        if not isinstance(entry, dict):
+            continue
+        for key in ("itemName", "name"):
+            value = entry.get(key)
+            if isinstance(value, str) and value == expected_name:
+                return True
+    return False
+
+
+def wait_for_log_message(log_dir: Path, expected_text: str, description: str, timeout_seconds: float = 30.0) -> Path:
+    deadline = time.time() + timeout_seconds
+    last_log_path: Path | None = None
+
+    while time.time() < deadline:
+        if log_dir.exists():
+            log_paths = sorted(log_dir.glob("*.txt"), key=lambda path: path.stat().st_mtime, reverse=True)
+            if log_paths:
+                last_log_path = log_paths[0]
+                contents = last_log_path.read_text(encoding="utf-8", errors="replace")
+                if expected_text in contents:
+                    return last_log_path
+        time.sleep(1.0)
+
+    if last_log_path is None:
+        raise AssertionError(f"{description}: OBS log file was not found in {log_dir}")
+    raise AssertionError(f"{description}: {expected_text!r} was not found in {last_log_path}")
+
+
 def get_source_activity_state(client: ObsWebSocketClient, source_name: str) -> SourceActivityState:
     response = client.request("GetSourceActive", {"sourceName": source_name})
 
@@ -481,6 +532,7 @@ def capture_changed_screenshot(
     baseline_image: Image.Image,
     output_path: Path,
     timeout_seconds: float = 30.0,
+    description: str = "rendered scene output should visibly change",
 ) -> Image.Image:
     deadline = time.time() + timeout_seconds
     last_image: Image.Image | None = None
@@ -502,7 +554,7 @@ def capture_changed_screenshot(
     if last_image is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         last_image.save(output_path)
-    raise AssertionError("crop filter should visibly change the rendered scene output")
+    raise AssertionError(description)
 
 
 def assert_equal(actual: object, expected: object, description: str) -> None:
@@ -529,6 +581,8 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
     control_image = mouth_dir / "open.png"
     auto_filled_track_file = asset_root / "mouth_track.json"
     track_file = asset_root / "mouth_track_nyapan.npz"
+    lip_sync_audio = asset_root / "lip_sync_tone.wav"
+    late_audio_source_name = f"{args.source_name} Audio Follow"
     crop = CropSettings()
 
     client = ObsWebSocketClient(args.url, args.password)
@@ -588,6 +642,41 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
         input_settings = get_input_settings(client, args.source_name)
         assert_equal(normalize_path(str(track_file)), normalize_path(str(input_settings.get("track_file", ""))), "track_file npz")
 
+        ensure_input(
+            client,
+            args.scene_name,
+            late_audio_source_name,
+            LATE_AUDIO_SOURCE_KIND,
+            {
+                "is_local_file": True,
+                "local_file": str(lip_sync_audio),
+                "looping": True,
+                "restart_on_activate": True,
+                "clear_on_media_end": False,
+                "close_when_inactive": False,
+            },
+        )
+        time.sleep(1.0)
+
+        late_audio_source_uuid = get_input_uuid(client, late_audio_source_name)
+        client.request(
+            "SetInputSettings",
+            {
+                "inputName": args.source_name,
+                "inputSettings": {
+                    PROP_AUDIO_SYNC_SOURCE_UUID: late_audio_source_uuid,
+                },
+                "overlay": True,
+            },
+        )
+        time.sleep(1.0)
+        input_settings = get_input_settings(client, args.source_name)
+        assert_equal(
+            str(input_settings.get(PROP_AUDIO_SYNC_SOURCE_UUID, "")),
+            late_audio_source_uuid,
+            "late-added audio_sync_source_uuid",
+        )
+
         property_items = client.request(
             "GetInputPropertiesListPropertyItems",
             {
@@ -596,6 +685,19 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
             },
         ).get("propertyItems", [])
         assert_true(bool(property_items), "OBS audio source list should contain at least one entry")
+        assert_true(
+            property_item_contains_name(property_items, late_audio_source_name),
+            "OBS audio source list should include the late-added follow source",
+        )
+
+        audio_callback_log: str | None = None
+        if args.obs_log_dir:
+            callback_log_path = wait_for_log_message(
+                Path(args.obs_log_dir),
+                f"received first OBS audio callback for MotionPngTuberPlayer lip sync: {late_audio_source_uuid}",
+                "late-added OBS audio source should deliver audio callbacks",
+            )
+            audio_callback_log = str(callback_log_path)
 
         before_filter: Image.Image | None = None
         after_filter: Image.Image | None = None
@@ -639,6 +741,7 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
                 capture_target,
                 before_filter,
                 artifacts_dir / "after-filter.png",
+                description="crop filter should visibly change the rendered scene output",
             )
             after_filter_extent = get_nonblank_extent(after_filter)
             assert_true(after_filter_extent is not None, "after-filter screenshot should contain visible content")
@@ -685,6 +788,8 @@ def run_create_phase(args: argparse.Namespace) -> dict[str, object]:
             else None,
             "filter_difference_bbox": list(difference_bbox) if difference_bbox is not None else None,
             "audio_sync_source_items": len(property_items),
+            "audio_sync_source_uuid": late_audio_source_uuid,
+            "audio_callback_log": audio_callback_log,
             "capture_target": capture_target,
             "source_active": source_activity.active,
             "source_showing": source_activity.showing,
@@ -708,6 +813,7 @@ def run_reopen_phase(args: argparse.Namespace) -> dict[str, object]:
     mouth_dir = asset_root / "mouth"
     control_image = mouth_dir / "open.png"
     track_file = asset_root / "mouth_track_nyapan.npz"
+    late_audio_source_name = f"{args.source_name} Audio Follow"
     crop = CropSettings()
 
     client = ObsWebSocketClient(args.url, args.password)
@@ -741,12 +847,22 @@ def run_reopen_phase(args: argparse.Namespace) -> dict[str, object]:
         filters = client.request("GetSourceFilterList", {"sourceName": args.source_name}).get("filters", [])
         filter_names = [entry.get("filterName") for entry in filters if isinstance(entry, dict)]
         assert_true(args.filter_name in filter_names, f"{args.filter_name} should still exist after OBS restart")
+        late_audio_source_uuid = get_input_uuid(client, late_audio_source_name)
+        assert_true(bool(late_audio_source_uuid), f"{late_audio_source_name} should still exist after OBS restart")
 
         filter_settings = get_filter_settings(client, args.source_name, args.filter_name)
         assert_equal(int(filter_settings.get("left", 0)), crop.left, "persisted crop_filter left")
         assert_equal(int(filter_settings.get("right", 0)), crop.right, "persisted crop_filter right")
         assert_equal(int(filter_settings.get("top", 0)), crop.top, "persisted crop_filter top")
         assert_equal(int(filter_settings.get("bottom", 0)), crop.bottom, "persisted crop_filter bottom")
+        audio_callback_log: str | None = None
+        if args.obs_log_dir:
+            callback_log_path = wait_for_log_message(
+                Path(args.obs_log_dir),
+                f"received first OBS audio callback for MotionPngTuberPlayer lip sync: {late_audio_source_uuid}",
+                "persisted OBS audio source should still deliver audio callbacks after restart",
+            )
+            audio_callback_log = str(callback_log_path)
 
         restarted_image: Image.Image | None = None
         restart_capture_target: str | None = None
@@ -761,6 +877,8 @@ def run_reopen_phase(args: argparse.Namespace) -> dict[str, object]:
         summary = {
             "after_restart_size": list(restarted_image.size) if restarted_image is not None else None,
             "capture_target": restart_capture_target,
+            "audio_sync_source_uuid": late_audio_source_uuid,
+            "audio_callback_log": audio_callback_log,
             "source_active": source_activity.active,
             "source_showing": source_activity.showing,
             "scene_active": scene_activity.active,
@@ -786,6 +904,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scene-name", default="MotionPngTuberPlayer Scene")
     parser.add_argument("--source-name", default="MotionPngTuberPlayer Smoke Source")
     parser.add_argument("--filter-name", default="MotionPngTuberPlayer Crop Filter")
+    parser.add_argument("--obs-log-dir")
     return parser.parse_args()
 
 

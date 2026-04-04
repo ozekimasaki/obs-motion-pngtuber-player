@@ -39,6 +39,8 @@ struct obs_data;
 struct obs_data_array;
 struct obs_properties;
 struct obs_property;
+struct signal_handler;
+struct calldata;
 struct text_lookup;
 struct gs_effect;
 struct obs_missing_files;
@@ -57,6 +59,8 @@ typedef struct obs_data obs_data_t;
 typedef struct obs_data_array obs_data_array_t;
 typedef struct obs_properties obs_properties_t;
 typedef struct obs_property obs_property_t;
+typedef struct signal_handler signal_handler_t;
+typedef struct calldata calldata_t;
 typedef struct text_lookup lookup_t;
 typedef struct gs_effect gs_effect_t;
 typedef struct obs_missing_files obs_missing_files_t;
@@ -389,6 +393,7 @@ enum obs_text_type {
 #define OBS_PROPERTIES_DEFER_UPDATE (1 << 0)
 
 typedef bool (*obs_property_modified_t)(obs_properties_t *props, obs_property_t *property, obs_data_t *settings);
+typedef void (*signal_callback_t)(void *data, calldata_t *cd);
 
 EXPORT void obs_register_source_s(const struct obs_source_info *info, size_t size);
 EXPORT audio_t *obs_get_audio(void);
@@ -401,11 +406,15 @@ EXPORT const char *obs_source_get_name(const obs_source_t *source);
 EXPORT const char *obs_source_get_unversioned_id(const obs_source_t *source);
 EXPORT const char *obs_source_get_uuid(const obs_source_t *source);
 EXPORT uint32_t obs_source_get_output_flags(const obs_source_t *source);
+EXPORT signal_handler_t *obs_source_get_signal_handler(const obs_source_t *source);
 EXPORT void obs_source_add_audio_capture_callback(obs_source_t *source, obs_source_audio_capture_t callback,
 						  void *param);
 EXPORT void obs_source_remove_audio_capture_callback(obs_source_t *source, obs_source_audio_capture_t callback,
 						     void *param);
 EXPORT void obs_source_output_video(obs_source_t *source, const struct obs_source_frame *frame);
+EXPORT void signal_handler_connect(signal_handler_t *handler, const char *signal, signal_callback_t callback, void *data);
+EXPORT void signal_handler_disconnect(signal_handler_t *handler, const char *signal, signal_callback_t callback,
+				      void *data);
 
 EXPORT obs_data_t *obs_data_create(void);
 EXPORT obs_data_t *obs_data_create_from_json(const char *json_string);

@@ -119,6 +119,10 @@ jobs:
           }
 
           function Stop-PortableObs {
+            param(
+              [switch]$FailOnForceKill
+            )
+
             if (-not (Test-Path $pidFile)) {
               return
             }
@@ -139,6 +143,9 @@ jobs:
 
             $process = Get-Process -Id $obsProcessId -ErrorAction SilentlyContinue
             if ($process) {
+              if ($FailOnForceKill) {
+                throw "Portable OBS did not shut down gracefully."
+              }
               Stop-Process -Id $obsProcessId
             }
           }
@@ -157,9 +164,10 @@ jobs:
               --source-name "${{ env.SMOKE_SOURCE_NAME }}" `
               --filter-name "${{ env.SMOKE_FILTER_NAME }}" `
               --asset-dir "$env:RUNNER_TEMP\mpt-smoke-assets" `
-              --artifacts-dir $artifactsDir
+              --artifacts-dir $artifactsDir `
+              --obs-log-dir (Join-Path $portableObsConfig 'logs')
             if ($LASTEXITCODE -ne 0) { throw "create-phase smoke failed with exit code $LASTEXITCODE" }
-            Stop-PortableObs
+            Stop-PortableObs -FailOnForceKill
 
             Start-PortableObs
             & $python .\ci\obs-websocket-smoke.py `
@@ -169,8 +177,10 @@ jobs:
               --source-name "${{ env.SMOKE_SOURCE_NAME }}" `
               --filter-name "${{ env.SMOKE_FILTER_NAME }}" `
               --asset-dir "$env:RUNNER_TEMP\mpt-smoke-assets" `
-              --artifacts-dir $artifactsDir
+              --artifacts-dir $artifactsDir `
+              --obs-log-dir (Join-Path $portableObsConfig 'logs')
             if ($LASTEXITCODE -ne 0) { throw "reopen-phase smoke failed with exit code $LASTEXITCODE" }
+            Stop-PortableObs -FailOnForceKill
           } finally {
             Stop-PortableObs
           }
