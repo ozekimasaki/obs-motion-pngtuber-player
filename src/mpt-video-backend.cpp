@@ -19,6 +19,7 @@ struct MptVideoBackend {
 namespace {
 
 constexpr size_t MAX_EMPTY_SOURCE_READS = 64;
+constexpr size_t MAX_END_OF_STREAM_REWINDS = 8;
 
 template<typename T>
 void safe_release(T **ptr)
@@ -179,6 +180,7 @@ bool mpt_video_backend_read_next_frame(MptVideoBackend *backend, ImageBGRA &imag
 		return false;
 
 	size_t empty_reads = 0;
+	size_t end_of_stream_rewinds = 0;
 	for (;;) {
 		DWORD flags = 0;
 		LONGLONG timestamp = 0;
@@ -195,9 +197,10 @@ bool mpt_video_backend_read_next_frame(MptVideoBackend *backend, ImageBGRA &imag
 
 		if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
 			safe_release(&sample);
+			if (++end_of_stream_rewinds > MAX_END_OF_STREAM_REWINDS)
+				return false;
 			if (!seek_reader_to_start(backend->reader))
 				return false;
-			empty_reads = 0;
 			continue;
 		}
 
@@ -209,6 +212,7 @@ bool mpt_video_backend_read_next_frame(MptVideoBackend *backend, ImageBGRA &imag
 		}
 
 		empty_reads = 0;
+		end_of_stream_rewinds = 0;
 
 		IMFMediaBuffer *buffer = nullptr;
 		hr = sample->ConvertToContiguousBuffer(&buffer);

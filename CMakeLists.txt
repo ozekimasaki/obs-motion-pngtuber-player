@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(MotionPngTuberPlayer VERSION 0.1.50 LANGUAGES C CXX)
+project(MotionPngTuberPlayer VERSION 0.1.51 LANGUAGES C CXX)
 
 include(CTest)
 
@@ -172,5 +172,15 @@ if(BUILD_TESTING)
     )
   else()
     message(STATUS "ffmpeg not found; skipping mpt-video-backend-loop test target")
+  endif()
+
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(
+      NAME obs-websocket-smoke-unit
+      COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p obs_websocket_smoke_test.py
+    )
+  else()
+    message(STATUS "Python3 not found; skipping obs-websocket-smoke-unit test")
   endif()
 endif()

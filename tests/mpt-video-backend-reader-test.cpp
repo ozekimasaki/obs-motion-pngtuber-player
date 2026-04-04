@@ -355,6 +355,38 @@ bool test_too_many_null_samples_abort_read()
 	       expect(read_calls < 129, "null sample handling should stop before exhausting all queued retries");
 }
 
+bool test_too_many_end_of_stream_rewinds_abort_read()
+{
+	MptVideoBackend *backend = nullptr;
+	if (!create_backend(&backend))
+		return false;
+
+	std::vector<ReaderStep> steps;
+	steps.reserve(13);
+	for (size_t idx = 0; idx < 12; ++idx)
+		steps.push_back({S_OK, MF_SOURCE_READERF_ENDOFSTREAM, static_cast<LONGLONG>(idx), nullptr});
+	steps.push_back({S_OK, 0, 999, make_sample({1, 2, 3, 4, 5, 6, 7, 8})});
+	if (!steps.back().sample) {
+		std::cerr << "failed to create Media Foundation sample\n";
+		mpt_video_backend_destroy(backend);
+		return false;
+	}
+
+	auto *reader = new FakeSourceReader(std::move(steps), S_OK);
+	backend->reader = reader;
+
+	ImageBGRA image = make_image();
+	uint64_t timestamp_ns = 0;
+	const bool ok = mpt_video_backend_read_next_frame(backend, image, timestamp_ns);
+	const ULONG read_calls = reader->read_sample_calls();
+	const ULONG set_position_calls = reader->set_current_position_calls();
+	mpt_video_backend_destroy(backend);
+
+	return expect(!ok, "too many end-of-stream rewinds should abort instead of accepting a much later sample") &&
+	       expect(read_calls < 13, "end-of-stream rewind handling should stop before exhausting all queued retries") &&
+	       expect(set_position_calls < 13, "end-of-stream rewind handling should not keep seeking forever");
+}
+
 } // namespace
 
 int main()
@@ -369,6 +401,7 @@ int main()
 		{"reader error flag aborts read", test_reader_error_flag_aborts_read},
 		{"failed loop seek aborts read", test_failed_loop_seek_aborts_read},
 		{"too many null samples abort read", test_too_many_null_samples_abort_read},
+		{"too many end-of-stream rewinds abort read", test_too_many_end_of_stream_rewinds_abort_read},
 	};
 
 	int failures = 0;

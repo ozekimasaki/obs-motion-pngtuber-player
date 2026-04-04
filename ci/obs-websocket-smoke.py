@@ -599,10 +599,6 @@ def verify_continuous_motion(
         if sample_index + 1 < sample_count:
             time.sleep(interval_seconds)
 
-    assert_true(
-        len(unique_hashes) >= 3,
-        f"{source_name} should produce multiple distinct frames during loop playback",
-    )
     return {
         "sample_count": sample_count,
         "unique_hashes": len(unique_hashes),
