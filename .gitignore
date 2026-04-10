@@ -4,6 +4,8 @@ out/
 dist/
 build-win-fallback/
 build-win-fallback-vs/
+build-linux/
+build-linux-local/
 
 # Local OBS test trees
 obs-local-test/
@@ -19,11 +21,21 @@ python/__pycache__/
 python/**/*.pyc
 python/**/*.pyo
 python/**/*.pyd
+ci/__pycache__/
+tests/__pycache__/
 
 # Local environments
 .venv/
+.venv-tools/
 venv/
 env/
+
+# Local test work directories
+image-test-work/
+loop-test-work/
+image-test-review
+loop-test-review
+tests/linux-validation-sample/
 
 # Generated runtime artifacts
 *.framebuffer

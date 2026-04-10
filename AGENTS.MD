@@ -4,8 +4,8 @@
 
 - `MotionPngTuberPlayer` は `MotionPNGTuber` の派生 OBS プラグインプロジェクトです。
 - このディレクトリは **別 Git 管理前提** で進めています。
-- 現在の主対象は **Windows-only の native-only OBS source** です。
-- Linux / macOS 向けの build・smoke・release 導線は 2026-03-22 の方針転換で外し、現行サポート対象外とします。
+- 現在の主対象は **Windows native OBS source** と **Ubuntu build 対応 OBS source** です。
+- Windows release 導線は維持しますが、Ubuntu では source build をサポート対象に含めます。
 
 ## 実装状況
 
@@ -49,6 +49,7 @@
   - `.github\workflows\build-release.yml` で Windows build + package + OBS smoke test + release publish を回す
   - tag push ベースの GitHub Actions release publish は Windows smoke test 成功後のみ動く
   - 日本語向け `README.JA.MD` を追加し、README 導線も維持
+  - Ubuntu 向けに OBS per-user plugin layout (`~/.config/obs-studio/plugins/<plugin>/...`) へ install できる CMake option を追加
 
 ### 現在の backend 構成
 
@@ -58,6 +59,11 @@
   - Windows の口スプライト PNG decode
 - WinMM `waveIn`
   - Windows のソースごとの音声入力 capture
+- FFmpeg
+  - Ubuntu の loop 動画 decode
+  - Ubuntu の口スプライト PNG decode
+- OBS audio source follow
+  - Ubuntu の口パク音声入力の主経路
 
 ## 検証済み
 
@@ -79,11 +85,13 @@ portable OBS 32.0.4 と GitHub Actions Windows smoke で次を確認済みです
 
 ## 既知の制約
 
-- 現在のサポート対象は **Windows 64-bit OBS のみ**
-- Linux / macOS の build・smoke・release は現行方針では対象外
+- Windows release / smoke / packaging は引き続き Windows 中心
+- Ubuntu は **source build 対応** で、配布 zip / release automation は未整備
+- Ubuntu で `.npz` track を使う build には `zlib1g-dev` 相当の zlib 開発ヘッダーが必要
 - `.npz` は直接パースではなく、**sibling JSON がある前提の互換対応**
 - 通常インストール版 OBS (`C:\Program Files\obs-studio`) へ配置する場合は管理者権限が必要
 - DLL に英日 fallback text を内蔵しているため、release 配布物は DLL 単体で自己完結する
+- direct input device capture は現状 Windows backend のみで、Ubuntu では OBS 音声ソース追従を使う
 
 ## 重要ファイル
 
@@ -135,6 +143,23 @@ portable OBS へ配置する場合:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-to-obs.ps1 -ObsRoot .\obs-portable-test
+```
+
+Ubuntu build:
+
+```bash
+sudo apt install build-essential cmake pkg-config ffmpeg libobs-dev libavformat-dev libavcodec-dev libavutil-dev libswscale-dev zlib1g-dev
+cmake -S . -B build-linux -DMPT_BUILD_PLUGIN=ON -DMPT_INSTALL_UBUNTU_PER_USER_PLUGIN=ON
+cmake --build build-linux
+cmake --install build-linux --prefix "$HOME/.config/obs-studio/plugins"
+```
+
+`libobs` 開発ファイルがない環境で backend test だけ回す場合:
+
+```bash
+cmake -S . -B build-linux -DMPT_BUILD_PLUGIN=OFF -DBUILD_TESTING=ON
+cmake --build build-linux --target mpt-video-backend-loop-test
+ctest --test-dir build-linux --output-on-failure
 ```
 
 ## 次に着手しやすい項目
