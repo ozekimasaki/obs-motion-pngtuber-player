@@ -34,8 +34,12 @@
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <objbase.h>
+#else
+#include <zlib.h>
+#endif
 
 struct mpt_native_runtime {
 	void *impl;
@@ -66,27 +70,11 @@ struct AudioAnalysisWindow {
 	float zcr = 0.0f;
 };
 
-static std::wstring utf8_to_wide(const char *text)
-{
-	if (!text || !*text)
-		return std::wstring();
-
-	int needed = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
-	if (needed <= 0)
-		return std::wstring();
-
-	std::wstring out(static_cast<size_t>(needed), L'\0');
-	MultiByteToWideChar(CP_UTF8, 0, text, -1, out.data(), needed);
-	if (!out.empty() && out.back() == L'\0')
-		out.pop_back();
-	return out;
-}
-
 static std::filesystem::path utf8_to_path(const char *text)
 {
 	if (!text || !*text)
 		return std::filesystem::path();
-	return std::filesystem::path(utf8_to_wide(text));
+	return std::filesystem::u8path(text);
 }
 
 static std::filesystem::path utf8_to_path(const std::string &text)
@@ -562,6 +550,8 @@ static bool read_binary_file_utf8(const std::string &path, std::vector<uint8_t> 
 using ZlibByte = uint8_t;
 using ZlibUInt = unsigned int;
 using ZlibULong = unsigned long;
+
+#if defined(_WIN32)
 using ZlibVoidPtr = void *;
 using ZlibAllocFunc = ZlibVoidPtr(__cdecl *)(ZlibVoidPtr opaque, ZlibUInt items, ZlibUInt size);
 using ZlibFreeFunc = void(__cdecl *)(ZlibVoidPtr opaque, ZlibVoidPtr address);
@@ -589,9 +579,18 @@ using ZlibVersionFn = const char *(__cdecl *)(void);
 using ZlibInflateInit2Fn = int(__cdecl *)(ZlibStream *stream, int window_bits, const char *version, int stream_size);
 using ZlibInflateFn = int(__cdecl *)(ZlibStream *stream, int flush);
 using ZlibInflateEndFn = int(__cdecl *)(ZlibStream *stream);
+#else
+using ZlibStream = z_stream;
+using ZlibVersionFn = const char *(*)();
+using ZlibInflateInit2Fn = int (*)(ZlibStream *stream, int window_bits, const char *version, int stream_size);
+using ZlibInflateFn = int (*)(ZlibStream *stream, int flush);
+using ZlibInflateEndFn = int (*)(ZlibStream *stream);
+#endif
 
 struct ZlibApi {
+#if defined(_WIN32)
 	HMODULE module = nullptr;
+#endif
 	ZlibVersionFn version = nullptr;
 	ZlibInflateInit2Fn inflate_init2 = nullptr;
 	ZlibInflateFn inflate = nullptr;
@@ -601,8 +600,10 @@ struct ZlibApi {
 
 	~ZlibApi()
 	{
+#if defined(_WIN32)
 		if (module)
 			FreeLibrary(module);
+#endif
 	}
 };
 
@@ -611,6 +612,7 @@ static ZlibApi &get_zlib_api()
 	static ZlibApi api;
 	static std::once_flag once;
 	std::call_once(once, []() {
+#if defined(_WIN32)
 		api.module = LoadLibraryW(L"zlib.dll");
 		if (!api.module) {
 			api.error = "compressed NPZ members require OBS zlib.dll";
@@ -629,6 +631,17 @@ static ZlibApi &get_zlib_api()
 		}
 
 		api.available = true;
+#else
+		api.version = []() -> const char * { return zlibVersion(); };
+		api.inflate_init2 = [](ZlibStream *stream, int window_bits, const char *version, int stream_size) -> int {
+			UNUSED_PARAMETER(version);
+			UNUSED_PARAMETER(stream_size);
+			return inflateInit2(stream, window_bits);
+		};
+		api.inflate = [](ZlibStream *stream, int flush) -> int { return ::inflate(stream, flush); };
+		api.inflate_end = [](ZlibStream *stream) -> int { return inflateEnd(stream); };
+		api.available = true;
+#endif
 	});
 	return api;
 }
@@ -1140,7 +1153,7 @@ static bool inflate_npz_member(const NpzEntryView &entry, std::vector<uint8_t> &
 
 	output.assign(entry.uncompressed_size, 0);
 	ZlibStream stream {};
-	stream.next_in = entry.data;
+	stream.next_in = const_cast<uint8_t *>(entry.data);
 	stream.avail_in = (ZlibUInt)entry.compressed_size;
 	stream.next_out = output.empty() ? nullptr : output.data();
 	stream.avail_out = (ZlibUInt)output.size();
@@ -2013,12 +2026,15 @@ public:
 		shutdown_audio();
 		mpt_image_backend_destroy(image_backend_);
 		mpt_video_backend_destroy(video_backend_);
+#if defined(_WIN32)
 		if (co_initialized_)
 			CoUninitialize();
+#endif
 	}
 
 	bool initialize(std::string &error)
 	{
+#if defined(_WIN32)
 		HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 		if (SUCCEEDED(hr))
 			co_initialized_ = true;
@@ -2026,6 +2042,7 @@ public:
 			error = "CoInitializeEx failed";
 			return false;
 		}
+#endif
 
 		if (!mpt_image_backend_create(&image_backend_, error)) {
 			return false;

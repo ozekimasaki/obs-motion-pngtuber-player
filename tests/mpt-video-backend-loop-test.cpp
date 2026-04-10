@@ -1,10 +1,5 @@
 #include "mpt-video-backend.h"
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -12,6 +7,18 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <spawn.h>
+#include <sys/wait.h>
+extern char **environ;
+#endif
 
 namespace {
 
@@ -70,7 +77,7 @@ std::optional<Options> parse_args(int argc, char **argv)
 
 uint64_t fnv1a_64(const uint8_t *data, size_t size)
 {
-	uint64_t hash = 1469598103934665603ULL;
+	uint64_t hash = 14695981039346656037ULL;
 	for (size_t idx = 0; idx < size; ++idx) {
 		hash ^= static_cast<uint64_t>(data[idx]);
 		hash *= 1099511628211ULL;
@@ -78,15 +85,50 @@ uint64_t fnv1a_64(const uint8_t *data, size_t size)
 	return hash;
 }
 
-bool run_process(const std::wstring &command_line)
+#if defined(_WIN32)
+
+std::wstring utf8_to_wide(const std::string &value)
 {
+	if (value.empty())
+		return std::wstring();
+	int needed = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
+	if (needed <= 0)
+		return std::wstring();
+	std::wstring wide((size_t)needed, L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, wide.data(), needed);
+	if (!wide.empty() && wide.back() == L'\0')
+		wide.pop_back();
+	return wide;
+}
+
+std::wstring quote_windows_arg(const std::wstring &value)
+{
+	std::wstring escaped = L"\"";
+	for (wchar_t ch : value) {
+		if (ch == L'"' || ch == L'\\')
+			escaped.push_back(L'\\');
+		escaped.push_back(ch);
+	}
+	escaped.push_back(L'"');
+	return escaped;
+}
+
+bool run_process(const Options &options, const std::filesystem::path &video_path)
+{
+	std::wostringstream command;
+	command << quote_windows_arg(utf8_to_wide(options.ffmpeg))
+		<< L" -y -hide_banner -loglevel error"
+		<< L" -f lavfi -i "
+		<< quote_windows_arg(L"testsrc2=size=320x240:rate=24:duration=2")
+		<< L" -pix_fmt yuv420p "
+		<< quote_windows_arg(video_path.wstring());
+
 	STARTUPINFOW startup_info = {};
 	startup_info.cb = sizeof(startup_info);
 	PROCESS_INFORMATION process_info = {};
-	std::wstring mutable_command_line = command_line;
+	std::wstring mutable_command_line = command.str();
 	if (!CreateProcessW(nullptr, mutable_command_line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup_info,
 			    &process_info)) {
-		std::wcerr << L"CreateProcessW failed for command: " << command_line << L'\n';
 		return false;
 	}
 
@@ -98,18 +140,44 @@ bool run_process(const std::wstring &command_line)
 	return exit_code == 0;
 }
 
+#else
+
+bool run_process(const Options &options, const std::filesystem::path &video_path)
+{
+	pid_t child = -1;
+	std::string filter = "testsrc2=size=320x240:rate=24:duration=2";
+	std::string output_path = video_path.string();
+	std::vector<char *> argv = {
+		const_cast<char *>(options.ffmpeg.c_str()),
+		const_cast<char *>("-y"),
+		const_cast<char *>("-hide_banner"),
+		const_cast<char *>("-loglevel"),
+		const_cast<char *>("error"),
+		const_cast<char *>("-f"),
+		const_cast<char *>("lavfi"),
+		const_cast<char *>("-i"),
+		filter.data(),
+		const_cast<char *>("-pix_fmt"),
+		const_cast<char *>("yuv420p"),
+		output_path.data(),
+		nullptr,
+	};
+
+	if (posix_spawnp(&child, options.ffmpeg.c_str(), nullptr, nullptr, argv.data(), environ) != 0)
+		return false;
+
+	int status = 0;
+	if (waitpid(child, &status, 0) < 0)
+		return false;
+	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+#endif
+
 bool generate_motion_video(const Options &options, const std::filesystem::path &video_path)
 {
 	std::filesystem::create_directories(options.work_dir);
-
-	std::wostringstream command;
-	command << L'"' << std::filesystem::path(options.ffmpeg).wstring() << L'"'
-		<< L" -y -hide_banner -loglevel error"
-		<< L" -f lavfi -i "
-		<< L"\"testsrc2=size=320x240:rate=24:duration=2\""
-		<< L" -pix_fmt yuv420p "
-		<< L'"' << video_path.wstring() << L'"';
-	if (!run_process(command.str())) {
+	if (!run_process(options, video_path)) {
 		std::cerr << "ffmpeg failed while generating loop fixture\n";
 		return false;
 	}
@@ -139,6 +207,26 @@ int main(int argc, char **argv)
 	ImageBGRA frame;
 	if (!mpt_video_backend_open_loop_video(backend, video_path.u8string(), &frame, error)) {
 		std::cerr << "mpt_video_backend_open_loop_video failed: " << error << '\n';
+		mpt_video_backend_destroy(backend);
+		return 1;
+	}
+
+	error.clear();
+	const std::filesystem::path missing_video_path = options.work_dir / "missing-loop.mp4";
+	if (mpt_video_backend_open_loop_video(backend, missing_video_path.u8string(), &frame, error)) {
+		std::cerr << "mpt_video_backend_open_loop_video unexpectedly succeeded for a missing video\n";
+		mpt_video_backend_destroy(backend);
+		return 1;
+	}
+	if (error.empty()) {
+		std::cerr << "mpt_video_backend_open_loop_video returned no error for a missing video\n";
+		mpt_video_backend_destroy(backend);
+		return 1;
+	}
+
+	error.clear();
+	if (!mpt_video_backend_open_loop_video(backend, video_path.u8string(), &frame, error)) {
+		std::cerr << "mpt_video_backend_open_loop_video failed after reset path: " << error << '\n';
 		mpt_video_backend_destroy(backend);
 		return 1;
 	}

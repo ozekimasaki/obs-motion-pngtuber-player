@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32)
+
 #include <windows.h>
 #include <mmeapi.h>
 
@@ -437,3 +439,43 @@ void mpt_audio_backend_stop_input_capture(MptAudioCapture *capture)
 
 	delete capture;
 }
+
+#else
+
+struct MptAudioCapture {
+	int unused = 0;
+};
+
+std::vector<MptAudioInputDevice> mpt_audio_backend_enumerate_input_devices()
+{
+	return {};
+}
+
+bool mpt_audio_backend_resolve_input_device(const std::string &identity_json, long long fallback_index, uint32_t *out_index)
+{
+	UNUSED_PARAMETER(identity_json);
+	UNUSED_PARAMETER(fallback_index);
+	if (out_index)
+		*out_index = 0;
+	return false;
+}
+
+bool mpt_audio_backend_start_input_capture(const std::string &identity_json, long long fallback_index, MptAudioInputCallback callback,
+					   void *userdata, MptAudioCapture **out_capture, std::string &error)
+{
+	UNUSED_PARAMETER(identity_json);
+	UNUSED_PARAMETER(fallback_index);
+	UNUSED_PARAMETER(callback);
+	UNUSED_PARAMETER(userdata);
+	if (out_capture)
+		*out_capture = nullptr;
+	error = "direct input capture is not available on this platform yet; select an OBS audio source for lip sync";
+	return false;
+}
+
+void mpt_audio_backend_stop_input_capture(MptAudioCapture *capture)
+{
+	UNUSED_PARAMETER(capture);
+}
+
+#endif

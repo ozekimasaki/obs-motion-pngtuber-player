@@ -2,11 +2,13 @@
 
 [English README](./README.md)
 
-`MotionPngTuberPlayer` は、OBS で MotionPNGTuber を使うための **Windows 64-bit 専用プラグイン** です。
+`MotionPngTuberPlayer` は、OBS で MotionPNGTuber を使うための **Windows 64-bit / Ubuntu 対応プラグイン** です。
 
-いまの release は **DLL だけで動作** します。Python の追加インストールは不要です。
+現在の Windows release は **DLL だけで動作** します。Python の追加インストールは不要です。
 
 ## まずはこれだけ
+
+### Windows release
 
 ### 1. release をダウンロードする
 
@@ -38,6 +40,43 @@ obs-plugins\64bit\MotionPngTuberPlayer.dll
 ### 4. OBS を起動する
 
 OBS のソース追加で `MotionPngTuberPlayer` が出てくれば、インストール成功です。
+
+### Ubuntu build
+
+Ubuntu は現在 **ソースから build する導線** です。repository の CI でも `ubuntu-24.04` 上で plugin の build / test / install layout 検証に加えて Linux runtime 検証まで回すようにしています。
+
+Ubuntu 向け validation では synthetic fixture を生成し、Linux 専用経路の FFmpeg PNG decode、native `.npz` inflate / track load、native runtime の起動と描画、そして build した `.so` を libobs が load して source 作成できることまで確認します。
+
+まず Ubuntu の build 依存を入れてください。Linux のネイティブ `.npz` 読み込みには `zlib1g-dev` が必要です。現在の CMake minimum は **3.22** です。
+
+```bash
+sudo apt install build-essential cmake pkg-config ffmpeg libobs-dev libavformat-dev libavcodec-dev libavutil-dev libswscale-dev zlib1g-dev
+```
+
+そのうえで、OBS の per-user plugin ディレクトリへ install する形で build してください。
+
+```bash
+cmake -S . -B build-linux -DMPT_BUILD_PLUGIN=ON -DMPT_INSTALL_UBUNTU_PER_USER_PLUGIN=ON
+cmake --build build-linux
+cmake --install build-linux --prefix "$HOME/.config/obs-studio/plugins"
+```
+
+この install 手順で、次の場所に plugin が入ります。
+
+```text
+~/.config/obs-studio/plugins/MotionPngTuberPlayer/bin/64bit/MotionPngTuberPlayer.so
+~/.config/obs-studio/plugins/MotionPngTuberPlayer/data/locale/...
+```
+
+install / copy のあとに OBS を再起動してください。system 向けレイアウトで install したい場合は `-DMPT_INSTALL_UBUNTU_PER_USER_PLUGIN=OFF` を使ってください。
+
+`libobs` ヘッダーなしで backend test だけ回したい場合も、FFmpeg と zlib の開発ヘッダーは必要です:
+
+```bash
+cmake -S . -B build-linux -DMPT_BUILD_PLUGIN=OFF -DBUILD_TESTING=ON
+cmake --build build-linux --target mpt-video-backend-loop-test
+ctest --test-dir build-linux --output-on-failure
+```
 
 ## OBS での使い方
 
@@ -77,6 +116,8 @@ OBS で次の順に開きます。
 
 多くの場合は、OBS で使っているマイク入力ソースを選べば大丈夫です。
 
+Ubuntu では、この OBS 音声ソース追従経路がサポート対象です。
+
 ## 対応しているファイル
 
 - トラックは `.json` と `.npz` に対応
@@ -91,6 +132,11 @@ OBS で次の順に開きます。
 - OBS をいったん終了してから入れ直したか
 - `MotionPngTuberPlayer.dll` が `obs-plugins\64bit\` に入っているか
 - 32-bit ではなく **64-bit OBS** を使っているか
+
+Ubuntu では、次のパスも確認してください。
+
+- `~/.config/obs-studio/plugins/MotionPngTuberPlayer/bin/64bit/MotionPngTuberPlayer.so`
+- `~/.config/obs-studio/plugins/MotionPngTuberPlayer/data/locale/`
 
 ### コピーで拒否される
 
@@ -108,23 +154,32 @@ OBS で次の順に開きます。
 
 ## 現在の対応範囲
 
-- 対応環境は **Windows 64-bit OBS**
-- release は DLL-only
+- 対応環境は **Windows 64-bit OBS** と **Ubuntu build**
+- release 配布は現状 Windows 向け
 - OBS の通常ソースとして使えるので、標準フィルターもそのまま使えます
+- 直接入力デバイス capture はまだ Windows 向けで、Ubuntu では OBS 音声ソースを使ってください
 
 ## 開発者向けメモ
 
 通常の利用ではここは読まなくて大丈夫です。
 
-ローカル build:
+Windows ローカル build:
 
 ```powershell
 & 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' -S . -B build-win-fallback-vs
 & 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' --build build-win-fallback-vs --config Release
 ```
 
-ローカル package:
+Windows ローカル package:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\package-release.ps1
+```
+
+Ubuntu ローカル build:
+
+```bash
+cmake -S . -B build-linux -DMPT_BUILD_PLUGIN=ON -DMPT_INSTALL_UBUNTU_PER_USER_PLUGIN=ON
+cmake --build build-linux
+cmake --install build-linux --prefix "$HOME/.config/obs-studio/plugins"
 ```

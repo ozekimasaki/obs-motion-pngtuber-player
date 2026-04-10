@@ -18,7 +18,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#if defined(_WIN32)
 #include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
 
 #include "motionpngtuber-native.h"
 #include "mpt-text.h"
@@ -118,9 +122,14 @@ static bool path_has_separator(char ch)
 
 static char preferred_path_separator(void)
 {
+#if defined(_WIN32)
 	return '\\';
+#else
+	return '/';
+#endif
 }
 
+#if defined(_WIN32)
 static wchar_t *utf8_to_wide_dup(const char *text)
 {
 	if (!has_text(text))
@@ -140,17 +149,23 @@ static wchar_t *utf8_to_wide_dup(const char *text)
 	}
 	return wide;
 }
+#endif
 
 static bool path_is_directory(const char *path)
 {
 	if (!has_text(path))
 		return false;
+#if defined(_WIN32)
 	wchar_t *path_w = utf8_to_wide_dup(path);
 	if (!path_w)
 		return false;
 	DWORD attrs = GetFileAttributesW(path_w);
 	bfree(path_w);
 	return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+#else
+	struct stat st = {0};
+	return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
 }
 
 static bool extract_parent_directory(const char *path, struct dstr *out)
